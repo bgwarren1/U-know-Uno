@@ -1,0 +1,5 @@
+streamlit>=1.36
+pydantic>=2.7
+pytest>=8.2
+black>=24.3
+ruff>=0.5
