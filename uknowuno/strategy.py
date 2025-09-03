@@ -2,7 +2,7 @@ from typing import List, Optional
 from .cards import Card, Color, Rank
 from .rules import legal_moves
 
-
+# Will replace, might want to keep some of the heuristic though after training
 def recommend_move(
     hand: List[Card],
     top: Card,
