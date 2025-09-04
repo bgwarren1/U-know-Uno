@@ -77,7 +77,9 @@ init_session()
 def lobby_screen():
     st.title("UknowUno 🃏")
     st.subheader("Lobby")
-    st.caption("Tell the app your exact 7-card hand, then start. Opponents’ cards stay unknown.")
+    st.caption("Please enter your exact 7-card hand, then start. Opponents’ cards stay unknown.")
+
+    
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -144,7 +146,7 @@ def lobby_screen():
 def table_header(game: GameState):
     left, mid, right = st.columns([1,1,1])
     with left:
-        st.metric("Deck", f"{len(game.deck)} cards")
+        st.metric("Deck", f"{len(game.deck)} cards left")
         st.metric("Discard", f"{len(game.discard)} cards")
     with mid:
         st.subheader("Top Card")
