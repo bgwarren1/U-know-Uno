@@ -17,9 +17,13 @@ class GameState:
     # Which seat is *you*
     my_index: int = 0
 
+    
+
+    
     @property
     def top_card(self) -> Optional[Card]:
         return self.discard[-1] if self.discard else None
+        
 
     def num_players(self) -> int:
         return len(self.players)

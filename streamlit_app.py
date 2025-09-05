@@ -81,13 +81,15 @@ def lobby_screen():
 
     
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         n = st.number_input("Number of players", min_value=2, max_value=10, value=4, step=1)
     with c2:
         my_index = st.number_input("Your seat index (0-based)", min_value=0, max_value=int(n)-1, value=0, step=1)
     with c3:
         seed = st.text_input("Shuffle seed (optional)", value="")
+    with c4:
+        top = st.text_input("Please enter the top card", value="")
 
     st.write("### Your 7 cards (comma separated)")
     st.caption("Examples: `R-7, B-REVERSE, Y-0, G-2, R-5, WILD, WILD_DRAW4`")
@@ -111,6 +113,10 @@ def lobby_screen():
         except Exception as e:
             st.error(f"Parse error: {e}")
             return None
+        
+    
+
+
 
     if st.button("Start Game ▶️", type="primary", use_container_width=True):
         cards = parse_cards(my_cards_text) or []
@@ -131,6 +137,7 @@ def lobby_screen():
                 names=names,
                 seed=seed_int,
                 hand_size=7,
+                
             )
         except Exception as e:
             st.error(str(e))
@@ -149,6 +156,7 @@ def table_header(game: GameState):
         st.metric("Deck", f"{len(game.deck)} cards left")
         st.metric("Discard", f"{len(game.discard)} cards")
     with mid:
+        
         st.subheader("Top Card")
         if game.top_card:
             st.markdown(f"### {card_icon(game.top_card)}")

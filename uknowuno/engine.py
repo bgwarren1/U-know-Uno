@@ -101,11 +101,12 @@ def start_game_with_my_hand(
         hidden_pool.extend(real_drawn)
         players[pid].hidden_count = len(real_drawn)
 
-    # Flip an initial top card (prefer colored number for a clean start)
+    # Flip an initial top card (prefer colored number for a clean start) - Change this to user input
     active_color = Color.RED
     discard: List[Card] = []
     # try to find a non-wild number card on top
     while deck:
+        
         top = deck.pop()
         if (not top.is_wild()) and top.rank.name.startswith("R"):
             discard.append(top)
@@ -128,6 +129,7 @@ def start_game_with_my_hand(
         discard=discard,
         hidden_pool=hidden_pool,
         my_index=my_index,
+        
     )
     return state
 
