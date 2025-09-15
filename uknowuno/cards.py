@@ -32,7 +32,7 @@ class Rank(str, Enum):
     WILD_DRAW4 = "WILD_DRAW4"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) # making the cards immutable
 class Card:
     color: Optional[Color]  # None for wild before choosing color
     rank: Rank

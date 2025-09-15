@@ -65,62 +65,99 @@ def start_game_with_my_hand(
     names: Optional[List[str]] = None,
     seed: Optional[int] = None,
     hand_size: int = 7,
+    initial_top: Optional[Card] = None,
+    initial_active_color: Optional[Color] = None,
 ) -> GameState:
     assert 2 <= num_players <= 10, "Uno typically 2–10 players."
     assert len(my_hand) == hand_size, f"Expected {hand_size} cards for your hand."
 
     deck = new_shuffled_deck(seed)
-    if not names:
-        names = [f"Player {i}" for i in range(num_players)]
+
+    # Guard: starting top can't be one of your 7 (that would duplicate it)
+    if initial_top is not None and any(
+        (c.rank == initial_top.rank) and (c.color == initial_top.color)
+        for c in my_hand
+    ):
+        raise ValueError("Starting top card conflicts with your hand; pick a different top or change your hand.")
 
     # Remove your exact cards from the deck
     for card in my_hand:
         ok = _remove_one_card_from_list(deck, card)
         if not ok:
-            raise ValueError(f"Your card {card.short()} not available in deck (duplicate or typo?)")
+            raise ValueError(f"Your card {card.short()} not available in deck (duplicate/typo?)")
 
+    # Build players
+    if not names:
+        names = [f"Player {i}" for i in range(num_players)]
     players = [Player(id=i, name=names[i]) for i in range(num_players)]
-    players[my_index].hand = my_hand[:]  # copy
+    players[my_index].hand = my_hand[:]
     players[my_index].hidden_count = 0
 
-    # Deal opponents' unknown hands into a combined hidden pool
+    # Deal opponents into hidden_pool
     hidden_pool: List[Card] = []
     for pid in range(num_players):
         if pid == my_index:
             continue
-        drawn = _draw_from_deck(GameState(players, 0, 1, Color.RED, deck[:], [], hidden_pool[:], my_index), hand_size)
-        # NOTE: because we passed copies above, we should draw directly from 'deck'
-        # Re-implement draw directly here:
-        for _ in range(hand_size - len(drawn)):
-            # Just in case, though the function should handle it
-            pass
-        # Actually draw from the real deck and append to hidden_pool
-        real_drawn = _draw_from_deck(
-            GameState(players, 0, 1, Color.RED, deck, [], hidden_pool, my_index), hand_size
-        )
-        hidden_pool.extend(real_drawn)
-        players[pid].hidden_count = len(real_drawn)
+        # draw hand_size from deck
+        drawn = []
+        for _ in range(hand_size):
+            if not deck:
+                break
+            drawn.append(deck.pop())
+        hidden_pool.extend(drawn)
+        players[pid].hidden_count = len(drawn)
 
-    # Flip an initial top card (prefer colored number for a clean start) - Change this to user input
-    active_color = Color.RED
     discard: List[Card] = []
-    # try to find a non-wild number card on top
+    active_color: Color = Color.RED  # default fallback
+
+    # If user provided a specific starting top, use it (and keep counts consistent)
+    if initial_top is not None:
+        removed = _remove_one_card_from_list(deck, initial_top)
+        if not removed:
+            # Try removing it from hidden_pool, and decrement any opponent's hidden_count
+            removed = _remove_one_card_from_list(hidden_pool, initial_top)
+            if removed:
+                for pid in range(num_players):
+                    if pid != my_index and players[pid].hidden_count > 0:
+                        players[pid].hidden_count -= 1
+                        break
+        if not removed:
+            raise ValueError(f"Starting top card {initial_top.short()} not available in shoe (deck/hidden pool).")
+
+        discard = [initial_top]
+        if initial_top.is_wild():
+            # Use provided active color or default RED
+            active_color = initial_active_color or Color.RED
+        else:
+            active_color = initial_top.color  # type: ignore[assignment]
+
+        return GameState(
+            players=players,
+            current_player=0,
+            direction=1,
+            active_color=active_color,
+            deck=deck,
+            discard=discard,
+            hidden_pool=hidden_pool,
+            my_index=my_index,
+        )
+
+    # Otherwise: flip a reasonable top from the deck (prefer colored number)
     while deck:
-        
         top = deck.pop()
         if (not top.is_wild()) and top.rank.name.startswith("R"):
             discard.append(top)
-            active_color = top.color  # type: ignore
+            active_color = top.color  # type: ignore[assignment]
             break
         else:
-            # Put it to bottom and try again a few times; if not, accept whatever we get
+            # Put it to bottom and keep trying a bit; if deck gets small, accept it
             deck.insert(0, top)
             if len(discard) == 0 and len(deck) < 20:
                 discard.append(top)
-                active_color = (top.color if not top.is_wild() else Color.RED) or Color.RED
+                active_color = (top.color if not top.is_wild() else Color.RED)
                 break
 
-    state = GameState(
+    return GameState(
         players=players,
         current_player=0,
         direction=1,
@@ -129,9 +166,8 @@ def start_game_with_my_hand(
         discard=discard,
         hidden_pool=hidden_pool,
         my_index=my_index,
-        
     )
-    return state
+
 
 # ---------- Legality helper for YOUR visible hand ----------
 

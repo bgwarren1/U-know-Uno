@@ -77,24 +77,55 @@ init_session()
 def lobby_screen():
     st.title("UknowUno 🃏")
     st.subheader("Lobby")
-    st.caption("Please enter your exact 7-card hand, then start. Opponents’ cards stay unknown.")
+    st.caption("Tell the app your exact 7-card hand, then (optionally) pick a starting top card. Opponents stay hidden.")
 
-    
-
-    c1, c2, c3, c4 = st.columns(4)
+    # --- basic setup inputs ---
+    c1, c2, c3 = st.columns(3)
     with c1:
         n = st.number_input("Number of players", min_value=2, max_value=10, value=4, step=1)
     with c2:
         my_index = st.number_input("Your seat index (0-based)", min_value=0, max_value=int(n)-1, value=0, step=1)
     with c3:
         seed = st.text_input("Shuffle seed (optional)", value="")
-    with c4:
-        top = st.text_input("Please enter the top card", value="")
 
+    # --- your hand input ---
     st.write("### Your 7 cards (comma separated)")
     st.caption("Examples: `R-7, B-REVERSE, Y-0, G-2, R-5, WILD, WILD_DRAW4`")
-    my_cards_text = st.text_input("Enter exactly 7 cards", value="")
+    my_cards_text = st.text_input("Enter exactly 7 cards", value="", key="lobby_my_hand")
 
+    # --- optional starting top card inputs ---
+    st.write("### (Optional) Starting top card")
+    st.caption("Examples: `R-5`, `G-REVERSE`, `WILD`, `WILD_DRAW4`")
+    start_top_text = st.text_input("Starting top card (optional)", value="", key="lobby_start_top_text")
+
+    # Try to parse the starting top immediately so we can show a color picker if it's a wild
+    parsed_start_top = None
+    parse_err = None
+    txt = start_top_text.strip()
+    if txt:
+        try:
+            parsed_start_top = Card.from_text(txt)
+        except Exception as e:
+            parse_err = str(e)
+
+    # If wild, let the user pick the active color for the wild top
+    initial_active_color = None
+    if parsed_start_top is not None and parsed_start_top.is_wild():
+        initial_active_color = st.radio(
+            "Active color for starting WILD",
+            [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE],
+            format_func=lambda c: c.name.title(),
+            horizontal=True,
+            key="lobby_wild_color_pick",
+        )
+
+    # Optional: live preview of parsed top card (if valid & not empty)
+    if parsed_start_top is not None:
+        st.caption(f"Parsed starting top: {card_icon(parsed_start_top)}")
+    elif txt and parse_err:
+        st.warning(f"Could not parse starting top card yet: {parse_err}")
+
+    # --- names input ---
     st.write("### Player names")
     default_names = [f"Player {i}" for i in range(int(n))]
     name_cols = st.columns(5)
@@ -103,7 +134,8 @@ def lobby_screen():
         with name_cols[i % 5]:
             names.append(st.text_input(f"Name {i}", value=default_names[i], key=f"name_{i}"))
 
-    def parse_cards(txt: str) -> Optional[List[Card]]:
+    # --- helpers ---
+    def parse_my_hand(txt: str) -> Optional[List[Card]]:
         if not txt.strip():
             return None
         parts = [p.strip() for p in txt.split(",") if p.strip()]
@@ -111,42 +143,58 @@ def lobby_screen():
             cards = [Card.from_text(p) for p in parts]
             return cards
         except Exception as e:
-            st.error(f"Parse error: {e}")
+            st.error(f"Hand parse error: {e}")
             return None
-        
-    
 
 
 
+    # --- start game ---
     if st.button("Start Game ▶️", type="primary", use_container_width=True):
-        cards = parse_cards(my_cards_text) or []
-        if len(cards) != 7:
-            st.error("Please enter exactly 7 valid cards.")
+        # 1) Your 7 cards
+        my_cards = parse_my_hand(my_cards_text) or []
+        if len(my_cards) != 7:
+            st.error("Please enter exactly 7 valid cards for your hand.")
             return
+
+        # 2) Optional starting top (validate only if user provided text)
+        initial_top = None
+        if txt:
+            if parsed_start_top is None:
+                st.error(f"Could not parse starting top card: {parse_err or 'invalid format'}")
+                return
+            initial_top = parsed_start_top
+
+        # 3) Optional seed
         seed_int: Optional[int] = None
         if seed.strip():
             try:
                 seed_int = int(seed.strip())
             except Exception:
                 st.warning("Seed must be an integer; ignoring.")
+
+        # 4) Create game
         try:
             st.session_state.game = start_game_with_my_hand(
                 num_players=int(n),
-                my_hand=cards,
+                my_hand=my_cards,
                 my_index=int(my_index),
                 names=names,
                 seed=seed_int,
                 hand_size=7,
-                
+                initial_top=initial_top,                       # <— NEW
+                initial_active_color=initial_active_color,     # <— NEW (only used if wild)
             )
         except Exception as e:
             st.error(str(e))
             return
+
+        # 5) Move to table
         st.session_state.phase = "table"
         st.session_state.selected_player = int(my_index)
         st.session_state.selected_card_idx = None
-        st.session_state.log = ["Game started (your hand recorded)."]
+        st.session_state.log = ["Game started" + (f" with top {initial_top.short()}" if initial_top else ".")]
         st.rerun()
+
 
 # ---------------- Table ----------------
 
