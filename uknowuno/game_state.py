@@ -14,8 +14,11 @@ class GameState:
     discard: List[Card] = field(default_factory=list)
     # Combined hidden cards that belong to all *opponents* (unknown composition per player)
     hidden_pool: List[Card] = field(default_factory=list)
-    # Which seat is *you*
+    # Which seat is you
     my_index: int = 0
+
+    # manual mode: in this mode (realistic online game mode), operator must record every play and top card
+    manual_mode: bool = False
 
     
 

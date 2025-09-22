@@ -67,24 +67,10 @@ def start_game_with_my_hand(
     hand_size: int = 7,
     initial_top: Optional[Card] = None,
     initial_active_color: Optional[Color] = None,
+    manual_mode: bool = False,           # NEW
 ) -> GameState:
-    assert 2 <= num_players <= 10, "Uno typically 2–10 players."
-    assert len(my_hand) == hand_size, f"Expected {hand_size} cards for your hand."
-
-    deck = new_shuffled_deck(seed)
-
-    # Guard: starting top can't be one of your 7 (that would duplicate it)
-    if initial_top is not None and any(
-        (c.rank == initial_top.rank) and (c.color == initial_top.color)
-        for c in my_hand
-    ):
-        raise ValueError("Starting top card conflicts with your hand; pick a different top or change your hand.")
-
-    # Remove your exact cards from the deck
-    for card in my_hand:
-        ok = _remove_one_card_from_list(deck, card)
-        if not ok:
-            raise ValueError(f"Your card {card.short()} not available in deck (duplicate/typo?)")
+    assert 2 <= num_players <= 10
+    assert len(my_hand) == hand_size
 
     # Build players
     if not names:
@@ -93,12 +79,53 @@ def start_game_with_my_hand(
     players[my_index].hand = my_hand[:]
     players[my_index].hidden_count = 0
 
-    # Deal opponents into hidden_pool
+    # MANUAL MODE: no deck, no hidden pool; opponents just start with counts
+    if manual_mode:
+        # Opponents start with 7 hidden cards (counts only)
+        for pid in range(num_players):
+            if pid != my_index:
+                players[pid].hidden_count = hand_size
+        discard: List[Card] = []
+        if initial_top is None:
+            raise ValueError("Manual mode requires an explicit starting top card.")
+        discard = [initial_top]
+        active_color = (
+            initial_active_color
+            or (initial_top.color if not initial_top.is_wild() else Color.RED)
+            or Color.RED
+        )
+        return GameState(
+            players=players,
+            current_player=0,
+            direction=1,
+            active_color=active_color,
+            deck=[],                 # not used
+            discard=discard,
+            hidden_pool=[],          # not used
+            my_index=my_index,
+            manual_mode=True,
+        )
+
+    # NORMAL MODE (non-manual): keep your previous behavior (deck + hidden_pool)
+    deck = new_shuffled_deck(seed)
+
+    # safeguard: chosen top cannot also be in your hand (would duplicate)
+    if initial_top is not None and any(
+        (c.rank == initial_top.rank) and (c.color == initial_top.color)
+        for c in my_hand
+    ):
+        raise ValueError("Starting top card conflicts with your hand.")
+
+    # remove your exact hand from deck
+    for card in my_hand:
+        if not _remove_one_card_from_list(deck, card):
+            raise ValueError(f"Your card {card.short()} not available in deck.")
+
+    # deal opponents into hidden_pool
     hidden_pool: List[Card] = []
     for pid in range(num_players):
         if pid == my_index:
             continue
-        # draw hand_size from deck
         drawn = []
         for _ in range(hand_size):
             if not deck:
@@ -108,13 +135,11 @@ def start_game_with_my_hand(
         players[pid].hidden_count = len(drawn)
 
     discard: List[Card] = []
-    active_color: Color = Color.RED  # default fallback
+    active_color: Color = Color.RED
 
-    # If user provided a specific starting top, use it (and keep counts consistent)
     if initial_top is not None:
         removed = _remove_one_card_from_list(deck, initial_top)
         if not removed:
-            # Try removing it from hidden_pool, and decrement any opponent's hidden_count
             removed = _remove_one_card_from_list(hidden_pool, initial_top)
             if removed:
                 for pid in range(num_players):
@@ -122,40 +147,27 @@ def start_game_with_my_hand(
                         players[pid].hidden_count -= 1
                         break
         if not removed:
-            raise ValueError(f"Starting top card {initial_top.short()} not available in shoe (deck/hidden pool).")
-
+            raise ValueError(f"Starting top {initial_top.short()} not available.")
         discard = [initial_top]
-        if initial_top.is_wild():
-            # Use provided active color or default RED
-            active_color = initial_active_color or Color.RED
-        else:
-            active_color = initial_top.color  # type: ignore[assignment]
-
-        return GameState(
-            players=players,
-            current_player=0,
-            direction=1,
-            active_color=active_color,
-            deck=deck,
-            discard=discard,
-            hidden_pool=hidden_pool,
-            my_index=my_index,
+        active_color = (
+            initial_active_color
+            or (initial_top.color if not initial_top.is_wild() else Color.RED)
+            or Color.RED
         )
-
-    # Otherwise: flip a reasonable top from the deck (prefer colored number)
-    while deck:
-        top = deck.pop()
-        if (not top.is_wild()) and top.rank.name.startswith("R"):
-            discard.append(top)
-            active_color = top.color  # type: ignore[assignment]
-            break
-        else:
-            # Put it to bottom and keep trying a bit; if deck gets small, accept it
-            deck.insert(0, top)
-            if len(discard) == 0 and len(deck) < 20:
+    else:
+        # flip a reasonable top
+        while deck:
+            top = deck.pop()
+            if (not top.is_wild()) and top.rank.name.startswith("R"):
                 discard.append(top)
-                active_color = (top.color if not top.is_wild() else Color.RED)
+                active_color = top.color  # type: ignore
                 break
+            else:
+                deck.insert(0, top)
+                if len(discard) == 0 and len(deck) < 20:
+                    discard.append(top)
+                    active_color = (top.color if not top.is_wild() else Color.RED)
+                    break
 
     return GameState(
         players=players,
@@ -167,7 +179,6 @@ def start_game_with_my_hand(
         hidden_pool=hidden_pool,
         my_index=my_index,
     )
-
 
 # ---------- Legality helper for YOUR visible hand ----------
 
@@ -229,25 +240,25 @@ def opponent_play_from_menu(
     if state.top_card is None:
         return False, "No top card."
 
-    # Must be legal w.r.t. top + active color
     if not played_card.matches(state.top_card, state.active_color):
         return False, f"{played_card.short()} doesn't match top/active color."
 
-    # Reduce their hidden count
+    # decrement their count
     if state.players[player_id].hidden_count <= 0:
         return False, "That player has no cards to play."
     state.players[player_id].hidden_count -= 1
 
-    # Remove such a card from hidden_pool if possible; otherwise try from deck; else just accept (best-effort)
-    if not _remove_one_card_from_list(state.hidden_pool, played_card):
-        _remove_one_card_from_list(state.deck, played_card)
+    # In manual mode we don't maintain hidden_pool/deck identity
+    if not state.manual_mode:
+        # best effort to keep pools consistent
+        from_pool = _remove_one_card_from_list(state.hidden_pool, played_card)
+        if not from_pool:
+            _remove_one_card_from_list(state.deck, played_card)
 
-    # Place on discard and set color
+    # discard & color
     state.discard.append(played_card)
     if played_card.is_wild():
-        if chosen_color is None:
-            chosen_color = state.active_color
-        state.set_active_color(chosen_color)
+        state.set_active_color(chosen_color or state.active_color)
     else:
         state.set_active_color(played_card.color)  # type: ignore
 
@@ -275,42 +286,74 @@ def pass_turn(state: GameState, player_id: int) -> Tuple[bool, str]:
 # ---------- Apply action effects & advance ----------
 
 def _apply_action_and_advance(state: GameState, card: Card) -> Tuple[bool, str]:
-    msg = ""
     np_index = state.next_index(1)
 
+    # REVERSE
     if card.rank == Rank.REVERSE:
         if state.num_players() == 2:
             state.advance_turn(2)
-            return True, "Reverse (acts like Skip in 2 players)."
+            return True, "Reverse (2p => Skip)."
         state.direction *= -1
         state.advance_turn(1)
         return True, "Reverse: direction changed."
 
+    # SKIP
     if card.rank == Rank.SKIP:
         state.advance_turn(2)
         return True, "Skip: next player skipped."
 
+    # DRAW2
     if card.rank == Rank.DRAW2:
-        # Next player draws 2 and loses turn
-        drawn = _draw_from_deck(state, 2)
-        if np_index == state.my_index:
-            state.players[np_index].hand.extend(drawn)
+        if state.manual_mode:
+            # Increment target player's count; operator will add their own drawn cards if they are the target.
+            if np_index == state.my_index:
+                # we can't know the cards; user should add them via UI
+                pass
+            else:
+                state.players[np_index].hidden_count += 2
+            state.advance_turn(2)
+            return True, f"{state.players[np_index].name} draws 2 (manual)."
         else:
-            state.hidden_pool.extend(drawn)
-            state.players[np_index].hidden_count += len(drawn)
-        state.advance_turn(2)
-        return True, f"{state.players[np_index].name} draws 2 and is skipped."
+            drawn = _draw_from_deck(state, 2)
+            if np_index == state.my_index:
+                state.players[np_index].hand.extend(drawn)
+            else:
+                state.hidden_pool.extend(drawn)
+                state.players[np_index].hidden_count += len(drawn)
+            state.advance_turn(2)
+            return True, f"{state.players[np_index].name} draws 2 and is skipped."
 
+    # WILD+4
     if card.rank == Rank.WILD_DRAW4:
-        drawn = _draw_from_deck(state, 4)
-        if np_index == state.my_index:
-            state.players[np_index].hand.extend(drawn)
+        if state.manual_mode:
+            if np_index == state.my_index:
+                pass
+            else:
+                state.players[np_index].hidden_count += 4
+            state.advance_turn(2)
+            return True, f"{state.players[np_index].name} draws 4 (manual)."
         else:
-            state.hidden_pool.extend(drawn)
-            state.players[np_index].hidden_count += len(drawn)
-        state.advance_turn(2)
-        return True, f"{state.players[np_index].name} draws 4 and is skipped."
+            drawn = _draw_from_deck(state, 4)
+            if np_index == state.my_index:
+                state.players[np_index].hand.extend(drawn)
+            else:
+                state.hidden_pool.extend(drawn)
+                state.players[np_index].hidden_count += len(drawn)
+            state.advance_turn(2)
+            return True, f"{state.players[np_index].name} draws 4 and is skipped."
 
-    # Normal / WILD
+    # normal / WILD
     state.advance_turn(1)
     return True, "Played."
+
+
+
+# adding helper
+def manually_add_card_to_my_hand(state: GameState, card: Card) -> Tuple[bool, str]:
+    """
+    Manual mode helper: operator records the exact card they drew.
+    """
+    if not state.manual_mode:
+        return False, "Only needed in manual mode."
+    state.players[state.my_index].hand.append(card)
+    return True, f"Added {card.short()} to your hand."

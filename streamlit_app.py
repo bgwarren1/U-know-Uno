@@ -14,7 +14,10 @@ from uknowuno.engine import (
     opponent_play_from_menu,
     draw_for_player,
     pass_turn,
+    manually_add_card_to_my_hand,   # NEW
 )
+
+
 from uknowuno.strategy import recommend_move
 
 st.set_page_config(page_title="UknowUno", page_icon="🃏", layout="wide")
@@ -70,6 +73,47 @@ def reset_selection():
     st.session_state.selected_card_idx = None
     st.session_state.wild_color_pick = Color.RED
 
+
+
+def nested_card_picker(key_prefix: str, label: str = "Pick a card") -> Card:
+    st.caption(label)
+    group = st.radio(
+        "Color group",
+        ["Red", "Yellow", "Green", "Blue", "Wild"],
+        horizontal=True,
+        key=f"{key_prefix}_group",
+    )
+    # map to Color for non-wild
+    color_map = {
+        "Red": Color.RED,
+        "Yellow": Color.YELLOW,
+        "Green": Color.GREEN,
+        "Blue": Color.BLUE,
+    }
+    if group == "Wild":
+        wild_type = st.radio(
+            "Wild type",
+            ["WILD", "WILD_DRAW4"],
+            horizontal=True,
+            key=f"{key_prefix}_wildtype",
+        )
+        rank = Rank.WILD if wild_type == "WILD" else Rank.WILD_DRAW4
+        return Card(None, rank)
+    else:
+        val = st.selectbox(
+            "Value / Action",
+            ["0","1","2","3","4","5","6","7","8","9","SKIP","REVERSE","DRAW2"],
+            key=f"{key_prefix}_value",
+        )
+        if val.isdigit():
+            rank = Rank[f"R{val}"]
+        else:
+            rank = Rank[val]  # SKIP/REVERSE/DRAW2
+        return Card(color_map[group], rank)
+
+
+
+
 init_session()
 
 # ---------------- Lobby ----------------
@@ -78,6 +122,14 @@ def lobby_screen():
     st.title("UknowUno 🃏")
     st.subheader("Lobby")
     st.caption("Tell the app your exact 7-card hand, then (optionally) pick a starting top card. Opponents stay hidden.")
+    manual_mode = st.toggle(
+        "Manual Mode (you will input every played card; no deck)",
+        value=st.session_state.get("manual_mode", True),
+        key="lobby_manual_mode_toggle",   # <<< unique key fixes the collision
+    )
+    st.session_state.manual_mode = manual_mode  # keep it sticky on reruns
+
+
 
     # --- basic setup inputs ---
     c1, c2, c3 = st.columns(3)
@@ -87,6 +139,9 @@ def lobby_screen():
         my_index = st.number_input("Your seat index (0-based)", min_value=0, max_value=int(n)-1, value=0, step=1)
     with c3:
         seed = st.text_input("Shuffle seed (optional)", value="")
+
+    manual_mode = st.toggle("Manual Mode (you will input every played card; no deck)", value=True)
+
 
     # --- your hand input ---
     st.write("### Your 7 cards (comma separated)")
@@ -180,9 +235,10 @@ def lobby_screen():
                 my_index=int(my_index),
                 names=names,
                 seed=seed_int,
-                hand_size=7,
+                hand_size=7,                      
                 initial_top=initial_top,                       # <— NEW
                 initial_active_color=initial_active_color,     # <— NEW (only used if wild)
+                manual_mode=manual_mode,
             )
         except Exception as e:
             st.error(str(e))
@@ -304,10 +360,12 @@ def action_panel(game: GameState):
                 st.rerun()
 
         with colB:
-            if st.button("Draw 1", use_container_width=True, disabled=not my_turn):
+            draw_disabled = (not my_turn) or st.session_state.game.manual_mode
+            if st.button("Draw 1", use_container_width=True, disabled=draw_disabled):
                 ok, msg, drew = draw_for_player(st.session_state.game, pid, 1)
                 log(f"{p.name} -> {msg}")
                 st.rerun()
+
 
         with colC:
             if st.button("Pass", use_container_width=True, disabled=not my_turn):
@@ -337,40 +395,50 @@ def action_panel(game: GameState):
                         st.session_state.selected_card_idx = idx
                         st.toast(f"Suggested: {card_icon(rec)}")
                         st.rerun()
+        
+        if st.session_state.game.manual_mode:
+            st.write("---")
+            st.markdown("**Manual draw / add card to your hand**")
+            my_new_card = nested_card_picker("me_add", label="Card you drew")
+            if my_new_card.is_wild():
+                st.caption("Wilds in hand are colorless until you play them (you'll pick the color on play).")
+            if st.button("Add to my hand", use_container_width=True):
+                ok, msg = manually_add_card_to_my_hand(st.session_state.game, my_new_card)
+                log(f"You -> {msg}")
+                st.rerun()
+
 
     else:
-        # Opponent seat controls
-        legal_only = st.toggle("Show only legal cards (recommended)", value=True)
-        options = all_card_options()
-        # Filter legal if requested
-        if legal_only and game.top_card:
-            options = [c for c in options if c.matches(game.top_card, game.active_color)]
+        # Opponent seat controls — nested picker
+        played_card = nested_card_picker(f"opp_{pid}", label="Opponent played...")
 
-        opt_str = [card_icon(c) for c in options]
-        choice = st.selectbox("Opponent played...", options=list(range(len(options))), format_func=lambda i: opt_str[i])
-
-        chosen_card = options[choice] if options else None
-        if chosen_card and chosen_card.is_wild():
-            st.session_state.wild_color_pick = st.radio(
+        chosen_color = None
+        if played_card.is_wild():
+            chosen_color = st.radio(
                 "Choose color for WILD",
                 [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE],
-                format_func=lambda x: color_pill(x),
+                format_func=lambda x: f"{x.name.title()}",
                 horizontal=True,
-                key="wild_color_opp",
+                key=f"opp_wild_color_{pid}",
             )
 
-        colA, colB, colC = st.columns([1,1,1])
+        colA, colB, colC = st.columns([1, 1, 1])
+
+        # Record the opponent's play (this becomes the new top card if legal)
         with colA:
-            if st.button("Record Play", type="primary", use_container_width=True, disabled=(not my_turn or chosen_card is None)):
-                chosen = st.session_state.wild_color_pick if (chosen_card and chosen_card.is_wild()) else None
-                ok, msg = opponent_play_from_menu(st.session_state.game, pid, chosen_card, chosen)
+            if st.button("Record Play", type="primary", use_container_width=True, disabled=not my_turn):
+                ok, msg = opponent_play_from_menu(st.session_state.game, pid, played_card, chosen_color)
                 log(f"{p.name} -> Play: {msg}")
                 st.rerun()
+
+        # Opponent draws a card (in manual mode this just bumps their hidden count)
         with colB:
             if st.button("Draw 1", use_container_width=True, disabled=not my_turn):
                 ok, msg, _ = draw_for_player(st.session_state.game, pid, 1)
                 log(f"{p.name} -> {msg}")
                 st.rerun()
+
+        # Opponent passes
         with colC:
             if st.button("Pass", use_container_width=True, disabled=not my_turn):
                 ok, msg = pass_turn(st.session_state.game, pid)
