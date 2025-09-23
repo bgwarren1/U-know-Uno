@@ -10,6 +10,8 @@ class Player:
     hand: List[Card] = field(default_factory=list)
     # Hidden/unknown cards count (opponents)
     hidden_count: int = 0
+
+    # flags
     said_uno: bool = False
     is_human: bool = True
 
