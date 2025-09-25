@@ -32,6 +32,21 @@ def all_card_types() -> List[Card]:
 
 
 # HELPERS
+def find_hand_index_of_card(hand: List[Card], proto: Card) -> Optional[int]:
+    """
+    Return the index of the first card in `hand` that matches the type of `proto`.
+    - For non-wilds: match both color and rank.
+    - For wilds: match rank only (hand wilds have color=None).
+    """
+    for i, c in enumerate(hand):
+        if proto.is_wild():
+            if c.rank == proto.rank:
+                return i
+        else:
+            if (c.rank == proto.rank) and (c.color == proto.color):
+                return i
+    return None
+
 
 
 
