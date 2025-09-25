@@ -48,6 +48,20 @@ def find_hand_index_of_card(hand: List[Card], proto: Card) -> Optional[int]:
     return None
 
 
+def my_best_color_from_hand(hand: List[Card]) -> Optional[Color]:
+    """
+    Simple heuristic: pick the color you have the most of (ignoring wilds).
+    """
+    counts = {Color.RED: 0, Color.YELLOW: 0, Color.GREEN: 0, Color.BLUE: 0}
+    for c in hand:
+        if c.color in counts:
+            counts[c.color] += 1  # type: ignore
+    # pick the color with max count; if all zero, return None
+    best = max(counts.items(), key=lambda kv: kv[1])
+    return best[0] if best[1] > 0 else None
+
+
+
 
 
 
