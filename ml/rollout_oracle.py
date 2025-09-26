@@ -31,7 +31,9 @@ def all_card_types() -> List[Card]:
 
 
 
-# HELPERS
+"""
+HELPERS
+"""
 def find_hand_index_of_card(hand: List[Card], proto: Card) -> Optional[int]:
     """
     Return the index of the first card in `hand` that matches the type of `proto`.
@@ -61,7 +63,17 @@ def my_best_color_from_hand(hand: List[Card]) -> Optional[Color]:
     return best[0] if best[1] > 0 else None
 
 
-
-
+def hidden_pool_has(pool: List[Card], proto: Card) -> bool:
+    """
+    Does the hidden_pool contain at least one card of this *type*?
+    """
+    for c in pool:
+        if proto.is_wild():
+            if c.rank == proto.rank:
+                return True
+        else:
+            if (c.rank == proto.rank) and (c.color == proto.color):
+                return True
+    return False
 
 
