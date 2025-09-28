@@ -131,3 +131,25 @@ def opponent_pick_card_for_menu(state: GameState, pid: int, rng: random.Random,
         chosen_color = state.active_color or rng.choice([Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE])
 
     return proto, chosen_color
+
+
+
+
+
+
+
+"""
+TERMINAL CHECKS / Checking if game is over
+"""
+def player_total_count(state: GameState, pid: int) -> int:
+    p = state.players[pid]
+    return len(p.hand) + p.hidden_count
+
+def is_terminal(state: GameState) -> Optional[int]:
+    """
+    Return the winner's player_id if someone has 0 cards; else None.
+    """
+    for pid in range(state.num_players()):
+        if player_total_count(state, pid) == 0:
+            return pid
+    return None
