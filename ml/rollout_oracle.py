@@ -77,3 +77,57 @@ def hidden_pool_has(pool: List[Card], proto: Card) -> bool:
     return False
 
 
+
+
+"""
+Opponent Policy
+"""
+@dataclass
+class OpponentPolicyConfig:
+    prefer_actions_first: bool = True
+    prefer_keep_color: bool = True
+
+
+def opponent_pick_card_for_menu(state: GameState, pid: int, rng: random.Random,
+                                cfg: OpponentPolicyConfig) -> Tuple[Optional[Card], Optional[Color]]:
+    """
+    Choose a *type* of card for the opponent to "play from menu", based on what we
+    think exists in hidden_pool, and what matches the current top/active_color.
+    Returns (played_card_type, chosen_color_for_wild).
+    """
+    top = state.top_card
+    if top is None:
+        return None, None
+
+    # Candidate action types that are legal vs current top and exist in hidden_pool
+    candidates: List[Card] = []
+    for proto in all_card_types():
+        if not proto.matches(top, state.active_color):
+            continue
+        if hidden_pool_has(state.hidden_pool, proto):
+            candidates.append(proto)
+
+    if not candidates:
+        return None, None
+
+    # Basic preferences
+    def score(proto: Card) -> Tuple[int, int, int]:
+        # Higher is better
+        is_action = int(proto.rank in (Rank.SKIP, Rank.REVERSE, Rank.DRAW2))
+        is_same_color = int((not proto.is_wild()) and (proto.color == state.active_color))
+        is_number = int(proto.rank.name.startswith("R"))
+        # Order by preference flags
+        return (
+            is_action if cfg.prefer_actions_first else is_number,
+            is_same_color if cfg.prefer_keep_color else 0,
+            rng.randint(0, 10_000),  # small tie-breaker
+        )
+
+    proto = max(candidates, key=score)
+
+    # For wilds, choose a color—simple rule: keep active color if set, else random
+    chosen_color: Optional[Color] = None
+    if proto.is_wild():
+        chosen_color = state.active_color or rng.choice([Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE])
+
+    return proto, chosen_color
