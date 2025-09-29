@@ -153,3 +153,68 @@ def is_terminal(state: GameState) -> Optional[int]:
         if player_total_count(state, pid) == 0:
             return pid
     return None
+
+
+
+"""
+Playout after our chosen first move
+"""
+# ---------- One full playout after our chosen first move ----------
+
+def simulate_to_end(state: GameState, my_id: int, rng: random.Random, max_turns: int = 600) -> int:
+    """
+    Run a complete game using simple baseline policies for *everyone*.
+    Returns the winner's player_id.
+    """
+    turns = 0
+    while turns < max_turns:
+        turns += 1
+        win = is_terminal(state)
+        if win is not None:
+            return win
+
+        pid = state.current_player
+        top = state.top_card
+        assert top is not None, "No top card during rollout; state initialization bug?"
+
+        # My turn: use strategy.recommend_move as a baseline
+        if pid == my_id:
+            legal = legal_moves_for_player(state, pid)
+            if legal:
+                # Suggest a card via heuristic; fallback to first legal if None
+                next_player_size = player_total_count(state, state.next_index(1))
+                suggest = recommend_move(state.players[pid].hand, top, state.active_color, next_player_size) or legal[0]
+                chosen_color = None
+                if suggest.is_wild():
+                    chosen_color = my_best_color_from_hand(state.players[pid].hand) or state.active_color or Color.RED
+                idx = find_hand_index_of_card(state.players[pid].hand, suggest)
+                if idx is None:
+                    
+                    idx = 0
+                    chosen_color = chosen_color or (my_best_color_from_hand(state.players[pid].hand) or Color.RED)
+                play_card_by_index(state, pid, idx, chosen_color)
+            else:
+                # Draw one; if now legal, play it; else pass
+                draw_for_player(state, pid, 1)
+                legal2 = legal_moves_for_player(state, pid)
+                if legal2:
+                    card = legal2[0]
+                    idx = find_hand_index_of_card(state.players[pid].hand, card) or 0
+                    color = my_best_color_from_hand(state.players[pid].hand) if card.is_wild() else None
+                    play_card_by_index(state, pid, idx, color)
+                else:
+                    pass_turn(state, pid)
+
+        # Opponent turn: choose a type that exists in hidden_pool and is legal; else draw, then pass
+        else:
+            proto, color = opponent_pick_card_for_menu(state, pid, rng, OpponentPolicyConfig())
+            if proto is not None:
+                opponent_play_from_menu(state, pid, proto, color)
+            else:
+                draw_for_player(state, pid, 1)
+                pass_turn(state, pid)
+
+    # Safety stop: if we somehow loop too long, pick winner by fewest cards (rare)
+    sizes = [(player_total_count(state, pid), pid) for pid in range(state.num_players())]
+    sizes.sort()
+    return sizes[0][1]
