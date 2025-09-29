@@ -181,7 +181,7 @@ def simulate_to_end(state: GameState, my_id: int, rng: random.Random, max_turns:
         if pid == my_id:
             legal = legal_moves_for_player(state, pid)
             if legal:
-                # Suggest a card via heuristic; fallback to first legal if None
+                # Suggest a card from the heuristic; fallback to first legal if None
                 next_player_size = player_total_count(state, state.next_index(1))
                 suggest = recommend_move(state.players[pid].hand, top, state.active_color, next_player_size) or legal[0]
                 chosen_color = None
@@ -218,3 +218,4 @@ def simulate_to_end(state: GameState, my_id: int, rng: random.Random, max_turns:
     sizes = [(player_total_count(state, pid), pid) for pid in range(state.num_players())]
     sizes.sort()
     return sizes[0][1]
+
