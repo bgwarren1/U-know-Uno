@@ -219,3 +219,95 @@ def simulate_to_end(state: GameState, my_id: int, rng: random.Random, max_turns:
     sizes.sort()
     return sizes[0][1]
 
+
+
+
+"""
+Evalutate each of my legal moves with lots of rollouts
+"""
+
+@dataclass
+class ActionEstimate:
+    card: Card                   
+    chosen_color: Optional[Color] 
+    win_rate: float
+    wins: int
+    trials: int
+
+
+
+def rollout_value_for_action(
+    state: GameState,
+    my_id: int,
+    first_move: Card,
+    chosen_color: Optional[Color],
+    rng: random.Random,
+    n_rollouts: int = 100,
+) -> ActionEstimate:
+    """
+    Evaluate a specific (card type, chosen_color) by averaging win pct over n rollouts.
+    """
+    wins = 0
+    for _ in range(n_rollouts):
+        # Deep copy the whole game state since each trial gotta start from same spot
+        s = copy.deepcopy(state)
+
+        # Play the chosen move on the copy
+        idx = find_hand_index_of_card(s.players[my_id].hand, first_move)
+        if idx is None:
+            continue
+        play_card_by_index(s, my_id, idx, chosen_color)
+
+        winner = simulate_to_end(s, my_id, rng)
+        if winner == my_id:
+            wins += 1
+
+    trials = n_rollouts
+    return ActionEstimate(first_move, chosen_color, wins / trials if trials > 0 else 0.0, wins, trials)
+
+
+
+
+def evaluate_current_position(
+    state: GameState,
+    my_id: int,
+    n_rollouts_per_action: int = 64,
+    rng_seed: Optional[int] = None,
+) -> List[ActionEstimate]:
+    """
+    For the *current* state and the current player == my_id,
+    return a list of ActionEstimate, one per legal move (wilds expanded over colors).
+    """
+    assert state.current_player == my_id, "This evaluator expects it's your turn."
+
+    rng = random.Random(rng_seed)
+
+    legal = legal_moves_for_player(state, my_id)
+    estimates: List[ActionEstimate] = []
+
+    if not legal:
+        # No moves
+        return estimates
+
+    # For each legal move: if wild, evaluate all 4 color choices and keep the best;
+    # otherwise evaluate the card as-is.
+    for card in legal:
+        if card.is_wild():
+            colors = [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE]
+            best: Optional[ActionEstimate] = None
+            for c in colors:
+                est = rollout_value_for_action(state, my_id, card, c, rng, n_rollouts_per_action)
+                if (best is None) or (est.win_rate > best.win_rate):
+                    best = est
+            if best:
+                estimates.append(best)
+        else:
+            est = rollout_value_for_action(state, my_id, card, None, rng, n_rollouts_per_action)
+            estimates.append(est)
+
+    # Sort best-to-worst by win rate
+    estimates.sort(key=lambda e: e.win_rate, reverse=True)
+    return estimates
+
+
+
