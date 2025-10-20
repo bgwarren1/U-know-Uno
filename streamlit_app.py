@@ -1,6 +1,6 @@
 # streamlit run streamlit_app.py
 
-
+import random
 
 import streamlit as st
 from typing import List, Optional
@@ -16,6 +16,9 @@ from uknowuno.engine import (
     pass_turn,
     manually_add_card_to_my_hand,   # NEW
 )
+
+from ml.rollout_oracle import evaluate_current_position, find_hand_index_of_card, determinize_from_counts, evaluate_ensemble
+
 
 
 from uknowuno.strategy import recommend_move
@@ -174,7 +177,7 @@ def lobby_screen():
             key="lobby_wild_color_pick",
         )
 
-    # Optional: live preview of parsed top card (if valid & not empty)
+    
     if parsed_start_top is not None:
         st.caption(f"Parsed starting top: {card_icon(parsed_start_top)}")
     elif txt and parse_err:
@@ -189,7 +192,7 @@ def lobby_screen():
         with name_cols[i % 5]:
             names.append(st.text_input(f"Name {i}", value=default_names[i], key=f"name_{i}"))
 
-    # --- helpers ---
+    # HELPERS
     def parse_my_hand(txt: str) -> Optional[List[Card]]:
         if not txt.strip():
             return None
@@ -203,7 +206,7 @@ def lobby_screen():
 
 
 
-    # --- start game ---
+    # START GAME
     if st.button("Start Game ▶️", type="primary", use_container_width=True):
         # 1) Your 7 cards
         my_cards = parse_my_hand(my_cards_text) or []
@@ -395,6 +398,47 @@ def action_panel(game: GameState):
                         st.session_state.selected_card_idx = idx
                         st.toast(f"Suggested: {card_icon(rec)}")
                         st.rerun()
+
+        with st.expander("🤖 AI: Rollout Oracle (ensemble)"):
+            c1, c2, c3 = st.columns([2,1,1])
+            with c1:
+                rollouts = st.slider("Rollouts per action", 8, 256, 64, step=8, key=f"oracle_roll_{pid}")
+            with c2:
+                worlds = st.slider("Worlds", 2, 32, 8, step=1, key=f"oracle_worlds_{pid}")
+            with c3:
+                base_seed = st.number_input("Base seed", value=123, step=1, key=f"oracle_seed_{pid}")
+
+            # In non-manual mode you can optionally resample hidden info; in manual we must.
+            resample_toggle = st.checkbox(
+                "Resample hidden info (non-manual)", value=not st.session_state.game.manual_mode, key=f"oracle_resample_{pid}"
+            )
+
+            if st.button("Run Oracle", type="primary", use_container_width=True, key=f"run_oracle_{pid}"):
+                ests = evaluate_ensemble(
+                    st.session_state.game,
+                    my_id=pid,
+                    n_worlds=int(worlds),
+                    n_rollouts_per_action=int(rollouts),
+                    rng_seed=int(base_seed),
+                    force_determinize=resample_toggle or st.session_state.game.manual_mode,
+                )
+                st.session_state[f"oracle_results_{pid}"] = ests
+
+            ests = st.session_state.get(f"oracle_results_{pid}", [])
+            if ests:
+                st.write("**Top moves (aggregated across worlds):**")
+                for i, e in enumerate(ests[:5], 1):
+                    label = e.card.short()
+                    if e.card.is_wild() and e.chosen_color:
+                        label += f" → {e.chosen_color.name.title()}"
+                    # quick 95% CI (Wald)
+                    n = max(e.trials, 1)
+                    p = e.win_rate
+                    se = (p * (1 - p) / n) ** 0.5
+                    lo, hi = max(0.0, p - 1.96 * se), min(1.0, p + 1.96 * se)
+                    st.write(f"{i}. {label} — win≈ **{p:.3f}**  (±{1.96*se:.3f})  [{lo:.3f}, {hi:.3f}]  (wins {e.wins}/{e.trials})")
+   
+        
         
         if st.session_state.game.manual_mode:
             st.write("---")
