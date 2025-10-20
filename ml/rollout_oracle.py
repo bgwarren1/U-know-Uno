@@ -15,6 +15,7 @@ from uknowuno.engine import (
 )
 from uknowuno.game_state import GameState
 from uknowuno.strategy import recommend_move
+from uknowuno.rules import full_deck
 
 
 # enumerate all 54 card types
@@ -61,6 +62,43 @@ def my_best_color_from_hand(hand: List[Card]) -> Optional[Color]:
     # pick the color with max count; if all zero, return None
     best = max(counts.items(), key=lambda kv: kv[1])
     return best[0] if best[1] > 0 else None
+
+def _remove_one(pool, card):
+    for i, c in enumerate(pool):
+        if card.is_wild():
+            if c.rank == card.rank:
+                pool.pop(i); return True
+        else:
+            if c.rank == card.rank and c.color == card.color:
+                pool.pop(i); return True
+    return False
+
+def determinize_from_counts(state: GameState, rng: random.Random) -> GameState:
+    """Sample a full world (hidden hands + deck) consistent with your visible info."""
+    s = copy.deepcopy(state)
+    pool = full_deck()
+
+    # remove your hand & entire discard (including top)
+    for c in s.players[s.my_index].hand:
+        assert _remove_one(pool, c)
+    for c in s.discard:
+        assert _remove_one(pool, c)
+
+    # deal identities to opponents based on their hidden_count
+    s.hidden_pool = []
+    for pid in range(s.num_players()):
+        if pid == s.my_index:
+            continue
+        k = s.players[pid].hidden_count
+        draw = rng.sample(pool, k)
+        for c in draw: _remove_one(pool, c)
+        s.hidden_pool.extend(draw)
+
+    rng.shuffle(pool)
+    s.deck = pool
+    s.manual_mode = False
+    return s
+
 
 
 def hidden_pool_has(pool: List[Card], proto: Card) -> bool:
@@ -248,22 +286,18 @@ def rollout_value_for_action(
     Evaluate a specific (card type, chosen_color) by averaging win pct over n rollouts.
     """
     wins = 0
+    attempts = 0
     for _ in range(n_rollouts):
-        # Deep copy the whole game state since each trial gotta start from same spot
         s = copy.deepcopy(state)
-
-        # Play the chosen move on the copy
         idx = find_hand_index_of_card(s.players[my_id].hand, first_move)
         if idx is None:
-            continue
+            continue               # skip, don't count as a trial
+        attempts += 1
         play_card_by_index(s, my_id, idx, chosen_color)
-
-        winner = simulate_to_end(s, my_id, rng)
-        if winner == my_id:
+        if simulate_to_end(s, my_id, rng) == my_id:
             wins += 1
-
-    trials = n_rollouts
-    return ActionEstimate(first_move, chosen_color, wins / trials if trials > 0 else 0.0, wins, trials)
+    trials = max(attempts, 1)
+    return ActionEstimate(first_move, chosen_color, wins / trials, wins, trials)
 
 
 
@@ -278,7 +312,11 @@ def evaluate_current_position(
     For the *current* state and the current player == my_id,
     return a list of ActionEstimate, one per legal move (wilds expanded over colors).
     """
+
     assert state.current_player == my_id, "This evaluator expects it's your turn."
+
+    if state.manual_mode:
+        raise ValueError("Rollout oracle needs a full deck/hidden_pool. Disable Manual Mode or determinize first.")
 
     rng = random.Random(rng_seed)
 
@@ -311,3 +349,60 @@ def evaluate_current_position(
 
 
 
+def _action_key(card: Card, chosen_color: Optional[Color]) -> Tuple:
+    return (card.rank, card.color, chosen_color)
+
+@dataclass
+class ActionAggregate:
+    card: Card
+    chosen_color: Optional[Color]
+    wins: int = 0
+    trials: int = 0
+    @property
+    def win_rate(self) -> float:
+        return self.wins / self.trials if self.trials > 0 else 0.0
+
+def evaluate_ensemble(
+    state: GameState,
+    my_id: int,
+    n_worlds: int = 8,
+    n_rollouts_per_action: int = 32,
+    rng_seed: Optional[int] = None,
+    force_determinize: bool = False,
+) -> List[ActionEstimate]:
+    """
+    Evaluate the current position by averaging over multiple sampled worlds (different
+    hidden hands/deck orders) and different RNG streams.
+    """
+    base = random.Random(rng_seed)
+    totals: Dict[Tuple, ActionAggregate] = {}
+
+    for _ in range(n_worlds):
+        rng_world = random.Random(base.randint(0, 2**31 - 1))
+        # Build a simulation world:
+        if state.manual_mode or force_determinize:
+            world = determinize_from_counts(state, rng_world)
+        else:
+            # Even in non-manual, you may want to diversify worlds:
+            world = copy.deepcopy(state)
+
+        # Different rollout seed per world:
+        ests = evaluate_current_position(
+            world, my_id, n_rollouts_per_action, rng_seed=rng_world.randint(0, 2**31 - 1)
+        )
+
+        for e in ests:
+            key = _action_key(e.card, e.chosen_color)
+            agg = totals.get(key)
+            if not agg:
+                totals[key] = ActionAggregate(e.card, e.chosen_color, e.wins, e.trials)
+            else:
+                agg.wins += e.wins
+                agg.trials += e.trials
+
+    out: List[ActionEstimate] = [
+        ActionEstimate(a.card, a.chosen_color, a.win_rate, a.wins, a.trials)
+        for a in totals.values()
+    ]
+    out.sort(key=lambda x: x.win_rate, reverse=True)
+    return out
