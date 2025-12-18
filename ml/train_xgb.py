@@ -5,8 +5,9 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 from xgboost import XGBRegressor
+from random import choice
 
-from uknowuno.cards import Card
+from uknowuno.cards import Card, Color
 from uknowuno.cards import Rank 
 from uknowuno.engine import start_game_with_my_hand
 from uknowuno.rules import full_deck
@@ -16,16 +17,17 @@ from ml.rollout_oracle import evaluate_ensemble
 ART_DIR = os.path.join(os.path.dirname(__file__), "artifacts")
 os.makedirs(ART_DIR, exist_ok=True)
 
-def sample_start_state(num_players=4, my_index=0, seed=0):
+def sample_start_state(num_players=None, my_index=0, seed=0):
     rng = random.Random(seed)
+    if num_players is None:
+        num_players = choice([2, 3, 4])  # train on mixed sizes
+
     deck = full_deck()
     rng.shuffle(deck)
-
-    # deal my hand
     my_hand = [deck.pop() for _ in range(7)]
-    forbidden = {(c.color, c.rank) for c in my_hand}
 
-    # pick a valid initial top: not conflicting with my hand, and avoid WILD_DRAW4
+    # pick a valid initial top, avoid WILD_DRAW4 and conflict rule if your engine enforces it
+    forbidden = {(c.color, c.rank) for c in my_hand}
     initial_top = None
     while deck:
         cand = deck.pop()
@@ -34,9 +36,8 @@ def sample_start_state(num_players=4, my_index=0, seed=0):
         if (cand.color, cand.rank) not in forbidden:
             initial_top = cand
             break
-
     if initial_top is None:
-        # extremely unlikely; just resample entirely
+        # rare fallback: resample entirely
         return sample_start_state(num_players=num_players, my_index=my_index, seed=rng.randint(0, 2**31-1))
 
     names = [f"Player {i}" for i in range(num_players)]
@@ -52,46 +53,81 @@ def sample_start_state(num_players=4, my_index=0, seed=0):
         manual_mode=False,
     )
 
-def collect_dataset(games: int, worlds: int, rollouts: int, base_seed: int) -> Tuple[np.ndarray, np.ndarray, List[Tuple[Card, int]]]:
-    X_rows: List[np.ndarray] = []
-    y_rows: List[float] = []
-    meta: List[Tuple[Card, int]] = []  # (card, chosen_color_idx or -1)
+
+def _act_key(card: Card, chosen_color: Color | None) -> tuple:
+    """Key used both when reading oracle results and when aligning features."""
+    return (
+        card.rank.name,
+        card.color.name if card.color is not None else None,
+        chosen_color.name if chosen_color is not None else None,
+    )
+
+
+def collect_dataset(
+    games: int,
+    worlds: int,
+    rollouts: int,
+    base_seed: int,
+) -> Tuple[np.ndarray, np.ndarray, List[tuple]]:
+    """
+    Build a supervised dataset for XGBoost:
+      - X: features for (state, legal action)
+      - y: oracle-estimated win rate for that action
+      - meta: lightweight info per row (optional for debugging)
+    Assumes `sample_start_state(...)` samples 2/3/4-player games uniformly.
+    """
     rng = random.Random(base_seed)
 
-    for g in range(games):
-        state = sample_start_state(seed=rng.randint(0, 2**31-1))
-        # make sure it's my turn; at game start it is
-        ests = evaluate_ensemble(
-            state, my_id=state.my_index,
-            n_worlds=worlds, n_rollouts_per_action=rollouts,
-            rng_seed=rng.randint(0, 2**31-1),
-            force_determinize=False
-        )
+    X_rows: List[np.ndarray] = []
+    y_rows: List[float] = []
+    meta: List[tuple] = []  # e.g., [(card, chosen_color, num_players, hand_len), ...]
 
-        # build examples for current legal actions (wilds expanded by color)
-        X, acts = build_examples_for_legal_actions(state, state.my_index)
-        if not X: 
+    for g in range(games):
+        # Retry a few times in case start generation throws (e.g., conflict rules)
+        for _ in range(5):
+            try:
+                state = sample_start_state(seed=rng.randint(0, 2**31 - 1))
+                break
+            except ValueError:
+                continue
+        else:
+            # couldn't get a valid start; skip this sample
             continue
 
-        # map estimates to our expanded (card, color) list
-        # we keep best color for wilds; evaluate_ensemble already did that
-        # so match on (rank, color, chosen_color)
-        def key(card, color):
-            return (card.rank.name, card.color.name if card.color else None, color.name if color else None)
+        # Label with oracle (averaged across determinized worlds)
+        ests = evaluate_ensemble(
+            state,
+            my_id=state.my_index,
+            n_worlds=worlds,
+            n_rollouts_per_action=rollouts,
+            rng_seed=rng.randint(0, 2**31 - 1),
+            force_determinize=False,  # non-manual states already have a real deck
+        )
+        # Map oracle outputs for quick lookup
+        est_map = { _act_key(e.card, e.chosen_color): float(e.win_rate) for e in ests }
 
-        est_map = { key(e.card, e.chosen_color): e.win_rate for e in ests }
-        for x, (card, chosen_color) in zip(X, acts):
-            y = est_map.get(key(card, chosen_color), None)
+        # Build features for each legal action (wilds expanded to 4 chosen-color options)
+        X_list, acts = build_examples_for_legal_actions(state, state.my_index)
+        if not X_list:
+            continue
+
+        for x, (card, chosen_color) in zip(X_list, acts):
+            key = _act_key(card, chosen_color)
+            y = est_map.get(key, None)
             if y is None:
-                # If this legal action wasn't evaluated (should be rare), skip
+                # In rare mismatches (shouldn't happen), skip this row
                 continue
-            X_rows.append(x.astype(np.float32))
-            y_rows.append(float(y))
-            color_idx = [-1, 0, 1, 2, 3][0]  # not used downstream; placeholder
-            meta.append((card, -1))
 
-    X = np.vstack(X_rows)
-    y = np.array(y_rows, dtype=np.float32)
+            X_rows.append(x.astype(np.float32, copy=False))
+            y_rows.append(y)
+            meta.append((card, chosen_color, state.num_players(), len(state.players[state.my_index].hand)))
+
+    if not X_rows:
+        # Guardrail: avoid cryptic errors downstream
+        raise RuntimeError("No training rows collected — check rollout settings or featurizer consistency.")
+
+    X = np.ascontiguousarray(np.vstack(X_rows), dtype=np.float32)
+    y = np.asarray(y_rows, dtype=np.float32)
     return X, y, meta
 
 def main():
