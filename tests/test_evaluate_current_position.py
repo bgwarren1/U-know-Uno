@@ -23,6 +23,6 @@ def test_evaluate_current_position_returns_sorted_and_state_unchanged():
     # Sorted descending by win_rate
     rates = [e.win_rate for e in estimates]
     assert rates == sorted(rates, reverse=True)
-    # Original state should be unchanged (we deep-copy inside)
+    
     after = (list(state.discard), state.current_player)
     assert before == after

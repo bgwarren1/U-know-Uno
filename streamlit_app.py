@@ -5,6 +5,10 @@ import random
 import streamlit as st
 from typing import List, Optional
 
+from ml.infer_xgb import load_xgb, pick_with_xgb
+ 
+
+
 from uknowuno.cards import Card, Color, Rank
 from uknowuno.game_state import GameState
 from uknowuno.engine import (
@@ -14,7 +18,7 @@ from uknowuno.engine import (
     opponent_play_from_menu,
     draw_for_player,
     pass_turn,
-    manually_add_card_to_my_hand,   # NEW
+    manually_add_card_to_my_hand,   
 )
 
 from ml.rollout_oracle import evaluate_current_position, find_hand_index_of_card, determinize_from_counts, evaluate_ensemble
@@ -22,6 +26,17 @@ from ml.rollout_oracle import evaluate_current_position, find_hand_index_of_card
 
 
 from uknowuno.strategy import recommend_move
+
+
+
+# ---------------- XGBOOST (cache once) ----------------
+@st.cache_resource
+def _load_model():
+    try:
+        return load_xgb()   # loads ml/artifacts/xgb_uno.json
+    except Exception:
+        return None
+
 
 st.set_page_config(page_title="UknowUno", page_icon="🃏", layout="wide")
 
@@ -118,6 +133,12 @@ def nested_card_picker(key_prefix: str, label: str = "Pick a card") -> Card:
 
 
 init_session()
+
+
+
+
+
+
 
 # ---------------- Lobby ----------------
 
@@ -332,10 +353,11 @@ def action_panel(game: GameState):
     p = game.players[pid]
     my_seat = (pid == game.my_index)
     my_turn = (pid == game.current_player)
+
     st.subheader("Actions")
 
     if my_seat:
-        # Your seat controls
+        # ---- Your seat controls -------------------------------------------------
         sel_idx = st.session_state.selected_card_idx
         if sel_idx is not None and sel_idx < len(p.hand):
             c = p.hand[sel_idx]
@@ -351,12 +373,13 @@ def action_panel(game: GameState):
         else:
             st.caption("Click one of your cards to select it.")
 
-        colA, colB, colC, colD = st.columns([1,1,1,1])
+        colA, colB, colC, colD = st.columns([1, 1, 1, 1])
+
         with colA:
             if st.button("Play", type="primary", use_container_width=True, disabled=(not my_turn or sel_idx is None)):
                 chosen = None
                 if sel_idx is not None and sel_idx < len(p.hand) and p.hand[sel_idx].is_wild():
-                    chosen = st.session_state.wild_color_pick
+                    chosen = st.session_state.get("wild_color_pick", None)
                 ok, msg = play_card_by_index(st.session_state.game, pid, sel_idx if sel_idx is not None else -1, chosen)
                 log(f"{p.name} -> Play: {msg}")
                 reset_selection()
@@ -365,10 +388,9 @@ def action_panel(game: GameState):
         with colB:
             draw_disabled = (not my_turn) or st.session_state.game.manual_mode
             if st.button("Draw 1", use_container_width=True, disabled=draw_disabled):
-                ok, msg, drew = draw_for_player(st.session_state.game, pid, 1)
+                ok, msg, _ = draw_for_player(st.session_state.game, pid, 1)
                 log(f"{p.name} -> {msg}")
                 st.rerun()
-
 
         with colC:
             if st.button("Pass", use_container_width=True, disabled=not my_turn):
@@ -389,18 +411,14 @@ def action_panel(game: GameState):
                     if rec is None:
                         st.info("No recommendation.")
                     else:
-                        # highlight the first matching instance
-                        idx = None
-                        for i, h in enumerate(hand):
-                            if h == rec:
-                                idx = i
-                                break
+                        idx = next((i for i, h in enumerate(hand) if h == rec), None)
                         st.session_state.selected_card_idx = idx
                         st.toast(f"Suggested: {card_icon(rec)}")
                         st.rerun()
 
+        # ---- 🤖 Rollout Oracle (ensemble) --------------------------------------
         with st.expander("🤖 AI: Rollout Oracle (ensemble)"):
-            c1, c2, c3 = st.columns([2,1,1])
+            c1, c2, c3 = st.columns([2, 1, 1])
             with c1:
                 rollouts = st.slider("Rollouts per action", 8, 256, 64, step=8, key=f"oracle_roll_{pid}")
             with c2:
@@ -408,9 +426,10 @@ def action_panel(game: GameState):
             with c3:
                 base_seed = st.number_input("Base seed", value=123, step=1, key=f"oracle_seed_{pid}")
 
-            # In non-manual mode you can optionally resample hidden info; in manual we must.
             resample_toggle = st.checkbox(
-                "Resample hidden info (non-manual)", value=not st.session_state.game.manual_mode, key=f"oracle_resample_{pid}"
+                "Resample hidden info (non-manual)",
+                value=not st.session_state.game.manual_mode,
+                key=f"oracle_resample_{pid}",
             )
 
             if st.button("Run Oracle", type="primary", use_container_width=True, key=f"run_oracle_{pid}"):
@@ -431,15 +450,32 @@ def action_panel(game: GameState):
                     label = e.card.short()
                     if e.card.is_wild() and e.chosen_color:
                         label += f" → {e.chosen_color.name.title()}"
-                    # quick 95% CI (Wald)
                     n = max(e.trials, 1)
-                    p = e.win_rate
-                    se = (p * (1 - p) / n) ** 0.5
-                    lo, hi = max(0.0, p - 1.96 * se), min(1.0, p + 1.96 * se)
-                    st.write(f"{i}. {label} — win≈ **{p:.3f}**  (±{1.96*se:.3f})  [{lo:.3f}, {hi:.3f}]  (wins {e.wins}/{e.trials})")
-   
-        
-        
+                    p_hat = e.win_rate
+                    se = (p_hat * (1 - p_hat) / n) ** 0.5
+                    lo, hi = max(0.0, p_hat - 1.96 * se), min(1.0, p_hat + 1.96 * se)
+                    st.write(f"{i}. {label} — win≈ **{p_hat:.3f}**  (±{1.96*se:.3f})  [{lo:.3f}, {hi:.3f}]  (wins {e.wins}/{e.trials})")
+
+        # ---- ⚡ Instant ML recommender (XGBoost) --------------------------------
+        with st.expander("⚡ Instant ML recommender (XGBoost)"):
+            model = _load_model()
+            if model is None:
+                st.info("Train the model with:  `python -m ml.train_xgb`  then rerun the app.")
+            else:
+                if st.button("Recommend with ML", use_container_width=True, key=f"ml_rec_{pid}"):
+                    card, color, scored = pick_with_xgb(model, st.session_state.game, pid)
+                    if card is None:
+                        st.warning("No legal actions.")
+                    else:
+                        label = card.short() + (f" → {color.name.title()}" if color else "")
+                        st.success(f"ML suggests: {label}")
+                        idx = find_hand_index_of_card(st.session_state.game.players[pid].hand, card)
+                        if st.button("Play ML suggestion", key=f"ml_play_{pid}"):
+                            ok, msg = play_card_by_index(st.session_state.game, pid, idx or 0, color)
+                            log(f"{p.name} (ML) -> {msg}")
+                            st.rerun()
+
+        # ---- Manual add card (only in manual mode) ------------------------------
         if st.session_state.game.manual_mode:
             st.write("---")
             st.markdown("**Manual draw / add card to your hand**")
@@ -451,11 +487,9 @@ def action_panel(game: GameState):
                 log(f"You -> {msg}")
                 st.rerun()
 
-
     else:
-        # Opponent seat controls — nested picker
+        # ---- Opponent seat controls --------------------------------------------
         played_card = nested_card_picker(f"opp_{pid}", label="Opponent played...")
-
         chosen_color = None
         if played_card.is_wild():
             chosen_color = st.radio(
@@ -468,26 +502,24 @@ def action_panel(game: GameState):
 
         colA, colB, colC = st.columns([1, 1, 1])
 
-        # Record the opponent's play (this becomes the new top card if legal)
         with colA:
             if st.button("Record Play", type="primary", use_container_width=True, disabled=not my_turn):
                 ok, msg = opponent_play_from_menu(st.session_state.game, pid, played_card, chosen_color)
                 log(f"{p.name} -> Play: {msg}")
                 st.rerun()
 
-        # Opponent draws a card (in manual mode this just bumps their hidden count)
         with colB:
             if st.button("Draw 1", use_container_width=True, disabled=not my_turn):
                 ok, msg, _ = draw_for_player(st.session_state.game, pid, 1)
                 log(f"{p.name} -> {msg}")
                 st.rerun()
 
-        # Opponent passes
         with colC:
             if st.button("Pass", use_container_width=True, disabled=not my_turn):
                 ok, msg = pass_turn(st.session_state.game, pid)
                 log(f"{p.name} -> {msg}")
                 st.rerun()
+
 
 def history_panel():
     st.subheader("History")
@@ -544,3 +576,7 @@ if st.session_state.phase == "lobby":
     lobby_screen()
 else:
     table_screen()
+
+
+
+

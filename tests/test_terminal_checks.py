@@ -19,3 +19,7 @@ def test_is_terminal_detects_winner():
     p1.hand.clear()
     p1.hidden_count = 0
     assert is_terminal(state) == 1
+
+
+
+    

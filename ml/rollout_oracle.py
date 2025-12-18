@@ -406,3 +406,118 @@ def evaluate_ensemble(
     ]
     out.sort(key=lambda x: x.win_rate, reverse=True)
     return out
+
+# import copy, random
+# from dataclasses import dataclass
+
+# from uknowuno.rules import full_deck
+
+# from typing import List, Tuple, Optional, Dict
+# import numpy as np
+
+# from uknowuno.cards import Card, Color, Rank
+# from uknowuno.engine import legal_moves_for_player
+# from uknowuno.game_state import GameState
+
+# # ----- Action vocabulary (54 actions: 4 colors × (0..9, SKIP, REVERSE, DRAW2) + WILD, WILD_DRAW4)
+# COLORS = [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE]
+# NUMS = [Rank[f"R{i}"] for i in range(10)]
+# ACTIONS = [Rank.SKIP, Rank.REVERSE, Rank.DRAW2]
+# WILDS = [Rank.WILD, Rank.WILD_DRAW4]
+
+# ACTION_VOCAB: List[Card] = [Card(c, r) for c in COLORS for r in (NUMS + ACTIONS)] + [Card(None, r) for r in WILDS]
+
+# # ----- One-hot helpers
+# def one_hot_color(c: Optional[Color]) -> np.ndarray:
+#     v = np.zeros(4, dtype=np.float32)
+#     if c in COLORS:
+#         v[COLORS.index(c)] = 1.0
+#     return v
+
+# def one_hot_rank(r: Rank) -> np.ndarray:
+#     # order: R0..R9, SKIP, REVERSE, DRAW2, WILD, WILD_DRAW4  => 15 dims
+#     order = NUMS + ACTIONS + WILDS
+#     v = np.zeros(len(order), dtype=np.float32)
+#     v[order.index(r)] = 1.0
+#     return v
+
+# def hand_color_counts(hand: List[Card]) -> np.ndarray:
+#     v = np.zeros(4, dtype=np.float32)
+#     for c in hand:
+#         if c.color in COLORS:
+#             v[COLORS.index(c.color)] += 1.0
+#     return v
+
+# def hand_rank_counts(hand: List[Card]) -> np.ndarray:
+#     order = NUMS + ACTIONS + WILDS
+#     v = np.zeros(len(order), dtype=np.float32)
+#     for c in hand:
+#         v[order.index(c.rank)] += 1.0
+#     return v
+
+# def others_counts(state: GameState, me: int) -> np.ndarray:
+#     # relative order: next, next+1, ... (wrap)
+#     out = []
+#     for k in range(1, state.num_players()):
+#         pid = state.next_index(k) if state.current_player == me else (me + k) % state.num_players()
+#         if pid == me: continue
+#         p = state.players[pid]
+#         out.append(len(p.hand) + p.hidden_count)
+#     return np.array(out, dtype=np.float32)
+
+# # ----- Base state features (no action yet)
+# def encode_state(state: GameState, me: int) -> np.ndarray:
+#     top = state.top_card
+#     assert top is not None, "encode_state requires a top card"
+#     feats = np.concatenate([
+#         one_hot_color(state.active_color),          # 4
+#         one_hot_color(top.color),                   # 4
+#         one_hot_rank(top.rank),                     # 15
+#         hand_color_counts(state.players[me].hand),  # 4
+#         hand_rank_counts(state.players[me].hand),   # 15
+#         np.array([len(state.players[me].hand)], dtype=np.float32),  # 1
+#         others_counts(state, me),                   # N-1
+#         np.array([
+#             len(state.deck),                        # 1  (0 in manual-mode; okay)
+#             len(state.discard),                     # 1
+#             1.0 if state.direction == 1 else 0.0    # 1  (clockwise flag)
+#         ], dtype=np.float32),
+#     ])
+#     return feats
+
+# # ----- Action-only features (type + chosen wild color if any)
+# def encode_action(card: Card, chosen_color: Optional[Color]) -> np.ndarray:
+#     return np.concatenate([
+#         one_hot_color(card.color),        # 4 (wilds => zeros)
+#         one_hot_rank(card.rank),          # 15
+#         one_hot_color(chosen_color),      # 4 (all-zero for non-wilds)
+#         np.array([1.0 if card.is_wild() else 0.0], dtype=np.float32),  # 1
+#     ])
+
+# def build_examples_for_legal_actions(
+#     state: GameState, me: int
+# ) -> Tuple[List[np.ndarray], List[Tuple[Card, Optional[Color]]]]:
+#     """Return feature vectors and the corresponding (card, chosen_color) for each legal move.
+#        For wilds, expand into four color choices."""
+#     X: List[np.ndarray] = []
+#     acts: List[Tuple[Card, Optional[Color]]] = []
+#     base = encode_state(state, me)
+#     legal = legal_moves_for_player(state, me)
+#     if not legal:
+#         return X, acts
+#     for card in legal:
+#         if card.is_wild():
+#             for c in COLORS:
+#                 X.append(np.concatenate([base, encode_action(card, c)]))
+#                 acts.append((card, c))
+#         else:
+#             X.append(np.concatenate([base, encode_action(card, None)]))
+#             acts.append((card, None))
+#     return X, acts
+
+# def feature_dim(state: GameState) -> int:
+#     # convenience to see final dimensionality
+#     x, _ = build_examples_for_legal_actions(state, state.current_player)
+#     return len(x[0]) if x else 0
+
+
