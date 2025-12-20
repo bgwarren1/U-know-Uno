@@ -93,6 +93,22 @@ def reset_selection():
 
 
 
+def deck_indicator(game: GameState):
+    # Non-manual: engine owns a real draw pile
+    if not game.manual_mode:
+        st.metric("Deck", f"{len(game.deck)}")
+        st.caption(f"Discard pile: {len(game.discard)}")
+        return
+
+    # Manual: there is intentionally no engine-owned deck
+    st.metric("Deck", "N/A")
+    st.caption("Manual mode: no engine draw pile; you input draws/plays. "
+               f"Cards played: {len(game.discard)} · Cards in hands (reported): "
+               f"{sum(len(p.hand) + p.hidden_count for p in game.players)}")
+
+
+
+
 def nested_card_picker(key_prefix: str, label: str = "Pick a card") -> Card:
     st.caption(label)
     group = st.radio(
