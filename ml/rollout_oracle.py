@@ -35,6 +35,31 @@ def all_card_types() -> List[Card]:
 """
 HELPERS
 """
+
+# Helper to check the oracle simulations are all individual ; 
+# when we determinize a world or apply an action the player list can be rebuilt. If we keep the old my_id, you’ll credit wins to the wrong seat → tiny win%
+def map_pid_by_name(src: "GameState", dst: "GameState", pid: int) -> int:
+    """Return the index in `dst` that corresponds to `src.players[pid]` (via name)."""
+    target = src.players[pid].name
+    for j, p in enumerate(dst.players):
+        if p.name == target:
+            return j
+    # Fallback to same index if names somehow changed.
+    return min(pid, dst.num_players() - 1)
+
+def estimate_baseline(world: "GameState", my_id_world: int, trials: int = 256) -> float:
+    rng = random.Random(1337)
+    finished = wins = 0
+    for _ in range(trials):
+        s = copy.deepcopy(world)
+        done, w = simulate_to_end(s, my_id_world, rng, max_turns=300)
+        if done:
+            finished += 1
+            wins += (w == my_id_world)
+    return (wins / finished) if finished else 0.0
+
+
+
 def find_hand_index_of_card(hand: List[Card], proto: Card) -> Optional[int]:
     """
     Return the index of the first card in `hand` that matches the type of `proto`.
@@ -199,40 +224,52 @@ Playout after our chosen first move
 """
 # ---------- One full playout after our chosen first move ----------
 
-def simulate_to_end(state: GameState, my_id: int, rng: random.Random, max_turns: int = 600) -> int:
+def simulate_to_end(
+    state: GameState,
+    my_id: int,
+    rng: random.Random,
+    max_turns: int = 500,  # 300 is enough to finish most games; bump if needed
+) -> tuple[bool, Optional[int]]:
     """
-    Run a complete game using simple baseline policies for *everyone*.
-    Returns the winner's player_id.
+    Play out the game using simple baseline policies for *everyone*.
+    Returns (finished, winner_id). If finished is False, winner_id is None (timeout).
     """
     turns = 0
     while turns < max_turns:
         turns += 1
-        win = is_terminal(state)
+
+        win = is_terminal(state)  # returns winner_id or None
         if win is not None:
-            return win
+            return True, win
 
         pid = state.current_player
         top = state.top_card
         assert top is not None, "No top card during rollout; state initialization bug?"
 
-        # My turn: use strategy.recommend_move as a baseline
+        # --- MY TURN: simple baseline: heuristic -> fallback first-legal; draw if none
         if pid == my_id:
             legal = legal_moves_for_player(state, pid)
             if legal:
-                # Suggest a card from the heuristic; fallback to first legal if None
-                next_player_size = player_total_count(state, state.next_index(1))
-                suggest = recommend_move(state.players[pid].hand, top, state.active_color, next_player_size) or legal[0]
+                next_sz = player_total_count(state, state.next_index(1))
+                suggest = (
+                    recommend_move(state.players[pid].hand, top, state.active_color, next_sz)
+                    or legal[0]
+                )
                 chosen_color = None
                 if suggest.is_wild():
-                    chosen_color = my_best_color_from_hand(state.players[pid].hand) or state.active_color or Color.RED
+                    chosen_color = my_best_color_from_hand(state.players[pid].hand) \
+                                   or state.active_color or Color.RED
+
                 idx = find_hand_index_of_card(state.players[pid].hand, suggest)
                 if idx is None:
-                    
+                    # Fallback if suggest not found (e.g., hand mutated)
                     idx = 0
-                    chosen_color = chosen_color or (my_best_color_from_hand(state.players[pid].hand) or Color.RED)
+                    if state.players[pid].hand[idx].is_wild() and chosen_color is None:
+                        chosen_color = my_best_color_from_hand(state.players[pid].hand) or Color.RED
+
                 play_card_by_index(state, pid, idx, chosen_color)
             else:
-                # Draw one; if now legal, play it; else pass
+                # Draw 1; if now legal, auto play; else pass
                 draw_for_player(state, pid, 1)
                 legal2 = legal_moves_for_player(state, pid)
                 if legal2:
@@ -243,19 +280,27 @@ def simulate_to_end(state: GameState, my_id: int, rng: random.Random, max_turns:
                 else:
                     pass_turn(state, pid)
 
-        # Opponent turn: choose a type that exists in hidden_pool and is legal; else draw, then pass
+        # --- OPPONENT TURN: reasonable baseline policy
         else:
             proto, color = opponent_pick_card_for_menu(state, pid, rng, OpponentPolicyConfig())
             if proto is not None:
                 opponent_play_from_menu(state, pid, proto, color)
             else:
+                # Draw; auto play if legal, else pass
                 draw_for_player(state, pid, 1)
-                pass_turn(state, pid)
+                legal2 = legal_moves_for_player(state, pid)
+                if legal2:
+                    card = legal2[0]
+                    idx = find_hand_index_of_card(state.players[pid].hand, card) or 0
+                    color2 = None
+                    if card.is_wild():
+                        color2 = my_best_color_from_hand(state.players[pid].hand) or state.active_color or Color.RED
+                    play_card_by_index(state, pid, idx, color2)
+                else:
+                    pass_turn(state, pid)
 
-    # Safety stop: if we somehow loop too long, pick winner by fewest cards (rare)
-    sizes = [(player_total_count(state, pid), pid) for pid in range(state.num_players())]
-    sizes.sort()
-    return sizes[0][1]
+    # Timeout: mark unfinished
+    return False, None
 
 
 
@@ -303,49 +348,69 @@ def rollout_value_for_action(
 
 
 def evaluate_current_position(
-    state: GameState,
-    my_id: int,
-    n_rollouts_per_action: int = 64,
+    world: GameState,
+    my_id_world: int,
+    n_rollouts_per_action: int,
     rng_seed: Optional[int] = None,
-) -> List[ActionEstimate]:
+) -> list[ActionEstimate]:
     """
-    For the *current* state and the current player == my_id,
-    return a list of ActionEstimate, one per legal move (wilds expanded over colors).
+    Roll out each legal (card, chosen_color) from the given world/seat.
+    Guarantees wins <= trials, and never reports wins when trials == 0.
     """
-
-    assert state.current_player == my_id, "This evaluator expects it's your turn."
-
-    if state.manual_mode:
-        raise ValueError("Rollout oracle needs a full deck/hidden_pool. Disable Manual Mode or determinize first.")
-
     rng = random.Random(rng_seed)
-
-    legal = legal_moves_for_player(state, my_id)
-    estimates: List[ActionEstimate] = []
-
+    legal = legal_moves_for_player(world, my_id_world)
     if not legal:
-        # No moves
-        return estimates
+        return []
 
-    # For each legal move: if wild, evaluate all 4 color choices and keep the best;
-    # otherwise evaluate the card as-is.
+    results: list[ActionEstimate] = []
+
     for card in legal:
-        if card.is_wild():
-            colors = [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE]
-            best: Optional[ActionEstimate] = None
-            for c in colors:
-                est = rollout_value_for_action(state, my_id, card, c, rng, n_rollouts_per_action)
-                if (best is None) or (est.win_rate > best.win_rate):
-                    best = est
-            if best:
-                estimates.append(best)
-        else:
-            est = rollout_value_for_action(state, my_id, card, None, rng, n_rollouts_per_action)
-            estimates.append(est)
+        color_choices: list[Optional[Color]] = (
+            [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE] if card.is_wild() else [None]
+        )
 
-    # Sort best-to-worst by win rate
-    estimates.sort(key=lambda e: e.win_rate, reverse=True)
-    return estimates
+        for chosen_color in color_choices:
+            wins = 0
+            trials = 0
+
+            for _ in range(n_rollouts_per_action):
+                # Clone from the SAME world each time
+                s = copy.deepcopy(world)
+
+                # Find a matching card instance in this clone
+                idx = find_hand_index_of_card(s.players[my_id_world].hand, card)
+                if idx is None:
+                    # Rare mismatch from effects; skip this rollout entirely
+                    continue
+
+                # Apply candidate action
+                play_card_by_index(s, my_id_world, idx, chosen_color)
+
+                # Re-map my seat by name (defensive if list mutated)
+                my_id_after = map_pid_by_name(world, s, my_id_world)
+
+                # Simulate to end; normalize return type
+                out = simulate_to_end(s, my_id_after, rng, max_turns=300)
+                if isinstance(out, tuple) and len(out) == 2:
+                    finished, winner = out
+                else:
+                    finished, winner = True, out
+
+                if not finished:
+                    # Don’t count unfinished trajectories
+                    continue
+
+                # Count a valid trial
+                trials += 1
+                if winner == my_id_after:
+                    wins += 1
+
+            # Finalize this (card, color) estimate
+            win_rate = (wins / trials) if trials else 0.0
+            results.append(ActionEstimate(card, chosen_color, win_rate, wins, trials))
+
+    results.sort(key=lambda e: e.win_rate, reverse=True)
+    return results
 
 
 
@@ -357,10 +422,13 @@ class ActionAggregate:
     card: Card
     chosen_color: Optional[Color]
     wins: int = 0
-    trials: int = 0
+    trials: int = 0         # only finished rollouts counted here
+    timeouts: int = 0       
+
     @property
     def win_rate(self) -> float:
-        return self.wins / self.trials if self.trials > 0 else 0.0
+        return (self.wins / self.trials) if self.trials > 0 else 0.0
+
 
 def evaluate_ensemble(
     state: GameState,
@@ -370,31 +438,34 @@ def evaluate_ensemble(
     rng_seed: Optional[int] = None,
     force_determinize: bool = False,
 ) -> List[ActionEstimate]:
-    """
-    Evaluate the current position by averaging over multiple sampled worlds (different
-    hidden hands/deck orders) and different RNG streams.
-    """
     base = random.Random(rng_seed)
     totals: Dict[Tuple, ActionAggregate] = {}
 
     for _ in range(n_worlds):
         rng_world = random.Random(base.randint(0, 2**31 - 1))
-        # Build a simulation world:
+
+        # Build a simulation world
         if state.manual_mode or force_determinize:
             world = determinize_from_counts(state, rng_world)
         else:
-            # Even in non-manual, you may want to diversify worlds:
             world = copy.deepcopy(state)
 
-        # Different rollout seed per world:
+        # Map my seat into this world
+        my_id_world = map_pid_by_name(state, world, my_id)
+
+        # Evaluate the position in this world
         ests = evaluate_current_position(
-            world, my_id, n_rollouts_per_action, rng_seed=rng_world.randint(0, 2**31 - 1)
+            world,
+            my_id_world,
+            n_rollouts_per_action,
+            rng_seed=rng_world.randint(0, 2**31 - 1),
         )
 
+        # Aggregate results
         for e in ests:
             key = _action_key(e.card, e.chosen_color)
             agg = totals.get(key)
-            if not agg:
+            if agg is None:
                 totals[key] = ActionAggregate(e.card, e.chosen_color, e.wins, e.trials)
             else:
                 agg.wins += e.wins
@@ -406,6 +477,7 @@ def evaluate_ensemble(
     ]
     out.sort(key=lambda x: x.win_rate, reverse=True)
     return out
+
 
 # import copy, random
 # from dataclasses import dataclass

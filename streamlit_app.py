@@ -7,7 +7,8 @@ from typing import List, Optional
 
 from ml.infer_xgb import load_xgb, pick_with_xgb
  
-
+import copy
+from ml.rollout_oracle import estimate_baseline, map_pid_by_name
 
 from uknowuno.cards import Card, Color, Rank
 from uknowuno.game_state import GameState
@@ -23,7 +24,7 @@ from uknowuno.engine import (
 
 from ml.rollout_oracle import evaluate_current_position, find_hand_index_of_card, determinize_from_counts, evaluate_ensemble
 
-
+from uknowuno.rules import full_deck
 
 from uknowuno.strategy import recommend_move
 
@@ -93,19 +94,35 @@ def reset_selection():
 
 
 
+def compute_deck_remaining(game: GameState) -> tuple[int, int, int, int]:
+    """Return (remaining_est, total_cards, in_hands, in_discard).
+    remaining_est works for both manual and non-manual modes."""
+    total_cards = len(full_deck())  # robust to custom decks
+    in_hands = sum(len(p.hand) + getattr(p, "hidden_count", 0) for p in game.players)
+    in_discard = len(game.discard)
+    remaining_est = max(total_cards - in_hands - in_discard, 0)
+    return remaining_est, total_cards, in_hands, in_discard
+
 def deck_indicator(game: GameState):
-    # Non-manual: engine owns a real draw pile
+    remaining_est, total_cards, in_hands, in_discard = compute_deck_remaining(game)
+
     if not game.manual_mode:
-        st.metric("Deck", f"{len(game.deck)}")
-        st.caption(f"Discard pile: {len(game.discard)}")
-        return
-
-    # Manual: there is intentionally no engine-owned deck
-    st.metric("Deck", "N/A")
-    st.caption("Manual mode: no engine draw pile; you input draws/plays. "
-               f"Cards played: {len(game.discard)} · Cards in hands (reported): "
-               f"{sum(len(p.hand) + p.hidden_count for p in game.players)}")
-
+        # Engine also tracks an actual deck size; show both and reconcile if needed.
+        engine_left = len(game.deck)
+        if engine_left != remaining_est:
+            st.metric("Deck", f"{engine_left} (est {remaining_est})")
+            st.caption(
+                f"Accounting: total {total_cards} − hands {in_hands} − discard {in_discard} = {remaining_est}"
+            )
+        else:
+            st.metric("Deck", f"{engine_left}")
+            st.caption(f"Discard: {in_discard} • In hands: {in_hands}")
+    else:
+        # Manual mode: no engine-owned draw pile, but we can still compute it.
+        st.metric("Deck", f"{remaining_est}")
+        st.caption(
+            f"Computed from accounting: total {total_cards} − hands {in_hands} − discard {in_discard}"
+        )
 
 
 
@@ -297,7 +314,7 @@ def lobby_screen():
 def table_header(game: GameState):
     left, mid, right = st.columns([1,1,1])
     with left:
-        st.metric("Deck", f"{len(game.deck)} cards left")
+        deck_indicator(game)
         st.metric("Discard", f"{len(game.discard)} cards")
     with mid:
         
@@ -457,6 +474,16 @@ def action_panel(game: GameState):
                     rng_seed=int(base_seed),
                     force_determinize=resample_toggle or st.session_state.game.manual_mode,
                 )
+                # --- Optional baseline display (sanity check) ---
+                try:
+                    # Map my seat in this current state (in case you ever reorder players)
+                    my_id_world = map_pid_by_name(st.session_state.game, st.session_state.game, pid)
+                    base = estimate_baseline(copy.deepcopy(st.session_state.game), my_id_world, trials=128)
+                    st.caption(f"Baseline win (no forced action): ~{base:.3f}")
+                except Exception as e:
+                    # Keep the UI resilient if anything goes wrong
+                    st.caption(f"Baseline unavailable: {e}")
+
                 st.session_state[f"oracle_results_{pid}"] = ests
 
             ests = st.session_state.get(f"oracle_results_{pid}", [])
