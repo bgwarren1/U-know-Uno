@@ -332,12 +332,73 @@ def lobby_screen():
     # This is the string your existing parse_my_hand can use (no format change)
     my_cards_text = ", ".join(st.session_state.lobby_hand)
 
-    
+
+
+    """
+    Adding Actual Uno card icons for starting top card
+    """
+    if "lobby_top" not in st.session_state:
+        st.session_state.lobby_top = ""  # stores Card.short() like "R-5" or "WILD"
+    if "lobby_top_section" not in st.session_state:
+        st.session_state.lobby_top_section = "Red"
 
     # --- optional starting top card inputs ---
-    st.write("### (Optional) Starting top card")
-    st.caption("Examples: `R-5`, `G-REVERSE`, `WILD`, `WILD_DRAW4`")
-    start_top_text = st.text_input("Starting top card (optional)", value="", key="lobby_start_top_text")
+    # st.write("### (Optional) Starting top card")
+    # st.caption("Examples: `R-5`, `G-REVERSE`, `WILD`, `WILD_DRAW4`")
+    # start_top_text = st.text_input("Starting top card (optional)", value="", key="lobby_start_top_text")
+    st.write("### Starting top card")
+    top_on = st.toggle(
+        "Click for card menu",
+        value=(st.session_state.lobby_top != ""),
+        key="lobby_top_toggle",
+    )
+
+    if not top_on:
+        st.session_state.lobby_top = ""
+        start_top_text = ""   # keep your existing parsing path happy
+    else:
+        # section buttons
+        sec_cols = st.columns(5)
+        sections = ["Red", "Blue", "Green", "Yellow", "Wild"]
+        for i, s in enumerate(sections):
+            with sec_cols[i]:
+                if st.button(
+                    s,
+                    key=f"top_sec_{s}",
+                    use_container_width=True,
+                    type="primary" if st.session_state.lobby_top_section == s else "secondary",
+                ):
+                    st.session_state.lobby_top_section = s
+                    st.rerun()
+
+        # grid of candidates for that section
+        st.write(f"**Pick from {st.session_state.lobby_top_section}:**")
+        candidates = cards_for_section(st.session_state.lobby_top_section)
+        grid = st.columns(7)
+        for i, card in enumerate(candidates):
+            with grid[i % 7]:
+                st.image(card_png_path(card), use_container_width=True)
+                is_sel = (st.session_state.lobby_top == card.short())
+                if st.button(
+                    "✓" if is_sel else "Set",
+                    key=f"top_set_{st.session_state.lobby_top_section}_{card.short()}",
+                    use_container_width=True,
+                    type="primary" if is_sel else "secondary",
+                ):
+                    st.session_state.lobby_top = card.short()
+                    st.rerun()
+
+    # preview + bridge to your existing parse path
+    start_top_text = st.session_state.lobby_top
+    if start_top_text:
+        st.caption("Selected top card:")
+        st.image(card_png_path(Card.from_text(start_top_text)), width=140)
+
+    # optional: clear button
+    if st.button("Clear top card", key="top_clear", use_container_width=True):
+        st.session_state.lobby_top = ""
+        st.rerun()
+
 
     # Try to parse the starting top immediately so we can show a color picker if it's a wild
     parsed_start_top = None
