@@ -41,15 +41,30 @@ def _load_model_for(n_players: int):
         return None
 
 
+st.markdown("""
+<style>
+/* make the little pick buttons not chunky */
+.stButton > button {
+  padding: 0.15rem 0.25rem !important;
+  line-height: 1 !important;
+  border-radius: 10px !important;
+}
+
+/* reduce vertical gaps a bit */
+div[data-testid="stVerticalBlock"] > div { gap: 0.35rem; }
+</style>
+""", unsafe_allow_html=True)
+
+
 st.set_page_config(page_title="UknowUno", page_icon="🃏", layout="wide")
 
 
 
 
 
-"""
-Actual card image UI helpers
-"""
+
+# Actual card image UI helpers
+
 
 import os
 
@@ -109,6 +124,52 @@ def cards_for_section(section: str) -> List[Card]:
     return [Card(col, r) for r in (nums + acts)]
 
 
+def image_section_picker(key_prefix: str, label: str = "Pick a card", cols: int = 7, img_width: int = 70) -> Card:
+    st.caption(label)
+
+    # section state
+    sec_key = f"{key_prefix}_section"
+    if sec_key not in st.session_state:
+        st.session_state[sec_key] = "Red"
+
+    # section buttons
+    sections = ["Red", "Blue", "Green", "Yellow", "Wild"]
+    sec_cols = st.columns(5)
+    for i, s in enumerate(sections):
+        with sec_cols[i]:
+            if st.button(
+                s,
+                key=f"{key_prefix}_secbtn_{s}",
+                use_container_width=True,
+                type="primary" if st.session_state[sec_key] == s else "secondary",
+            ):
+                st.session_state[sec_key] = s
+                st.rerun()
+
+    # grid
+    candidates = cards_for_section(st.session_state[sec_key])
+    grid = st.columns(cols)
+    pick_key = f"{key_prefix}_picked"
+
+    # default picked
+    if pick_key not in st.session_state:
+        st.session_state[pick_key] = candidates[0].short()
+
+    for i, card in enumerate(candidates):
+        with grid[i % cols]:
+            st.image(card_png_path(card), width=img_width)
+
+            is_sel = (st.session_state[pick_key] == card.short())
+            if st.button(
+                "✓" if is_sel else "",
+                key=f"{key_prefix}_pickbtn_{card.short()}",
+                use_container_width=True,
+                type="primary" if is_sel else "secondary",
+            ):
+                st.session_state[pick_key] = card.short()
+                st.rerun()
+
+    return Card.from_text(st.session_state[pick_key])
 
 
 
@@ -249,7 +310,7 @@ init_session()
 def lobby_screen():
     st.title("UknowUno 🃏")
     st.subheader("Lobby")
-    st.caption("Tell the app your exact 7-card hand, then (optionally) pick a starting top card. Opponents stay hidden.")
+    st.caption("Tell the app your exact 7-card hand, then pick a starting top card. Opponents stay hidden.")
     manual_mode = st.toggle(
         "Manual Mode (you will input every played card; no deck)",
         value=st.session_state.get("manual_mode", True),
@@ -264,7 +325,7 @@ def lobby_screen():
     with c1:
         n = st.number_input("Number of players", min_value=2, max_value=10, value=4, step=1)
     with c2:
-        my_index = st.number_input("Your seat index (0-based)", min_value=0, max_value=int(n)-1, value=0, step=1)
+        my_index = st.number_input("Your seat index (0 for 1st, 1 for second, etc.)", min_value=0, max_value=int(n)-1, value=0, step=1)
     with c3:
         seed = st.text_input("Shuffle seed (optional)", value="")
 
@@ -512,7 +573,7 @@ def table_header(game: GameState):
         
         st.subheader("Top Card")
         if game.top_card:
-            st.markdown(f"### {card_icon(game.top_card)}")
+            st.image(card_png_path(game.top_card), width=110)
         st.caption(f"Active color: **{color_pill(game.active_color)}**")
     with right:
         direction = "Clockwise ↻" if game.direction == 1 else "Counterclockwise ↺"
@@ -555,10 +616,13 @@ def render_player_seat(game: GameState, pid: int):
             card_cols = st.columns(8, vertical_alignment="center")
             for idx, c in enumerate(p.hand):
                 col = card_cols[idx % 8]
-                label = card_icon(c)
                 with col:
-                    if st.button(label, key=f"card_{pid}_{idx}", type=("primary" if st.session_state.selected_card_idx == idx else "secondary"), use_container_width=True):
-                        st.session_state.selected_card_idx = None if st.session_state.selected_card_idx == idx else idx
+                    st.image(card_png_path(c), width=55)  # small icon size
+                    is_sel = (st.session_state.selected_card_idx == idx)
+                    if st.button("✓" if is_sel else "", key=f"card_{pid}_{idx}",
+                                type="primary" if is_sel else "secondary",
+                                use_container_width=True):
+                        st.session_state.selected_card_idx = None if is_sel else idx
                         st.rerun()
         else:
             st.write("🂠 " * min(p.total_count(), 20))
@@ -721,7 +785,8 @@ def action_panel(game: GameState):
         if st.session_state.game.manual_mode:
             st.write("---")
             st.markdown("**Manual draw / add card to your hand**")
-            my_new_card = nested_card_picker("me_add", label="Card you drew")
+            my_new_card = image_section_picker("me_add", label="Card you drew", cols=7, img_width=65)
+
             if my_new_card.is_wild():
                 st.caption("Wilds in hand are colorless until you play them (you'll pick the color on play).")
             if st.button("Add to my hand", use_container_width=True):
@@ -731,7 +796,8 @@ def action_panel(game: GameState):
 
     else:
         # ---- Opponent seat controls --------------------------------------------
-        played_card = nested_card_picker(f"opp_{pid}", label="Opponent played...")
+        played_card = image_section_picker(f"opp_{pid}", label="Opponent played...", cols=7, img_width=65)
+
         chosen_color = None
         if played_card.is_wild():
             chosen_color = st.radio(
