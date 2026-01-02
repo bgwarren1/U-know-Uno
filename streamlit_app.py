@@ -5,7 +5,7 @@ import random
 import streamlit as st
 from typing import List, Optional
 
-from ml.infer_xgb import load_xgb, pick_with_xgb
+from ml.infer_xgb import load_xgb_for_players, pick_with_xgb
  
 import copy
 from ml.rollout_oracle import estimate_baseline, map_pid_by_name
@@ -30,11 +30,13 @@ from uknowuno.strategy import recommend_move
 
 
 
-# ---------------- XGBOOST (cache once) ----------------
+
+# ---------------- XGBOOST (cache per player-count) ----------------
 @st.cache_resource
-def _load_model():
+def _load_model_for(n_players: int):
     try:
-        return load_xgb()   # loads ml/artifacts/xgb_uno.json
+        # Loads models/xgb_{n}p.json + sidecar meta, saved as Booster
+        return load_xgb_for_players(n_players)
     except Exception:
         return None
 
@@ -197,7 +199,7 @@ def lobby_screen():
     with c3:
         seed = st.text_input("Shuffle seed (optional)", value="")
 
-    manual_mode = st.toggle("Manual Mode (you will input every played card; no deck)", value=True)
+
 
 
     # --- your hand input ---
@@ -501,9 +503,15 @@ def action_panel(game: GameState):
 
         # ---- ⚡ Instant ML recommender (XGBoost) --------------------------------
         with st.expander("⚡ Instant ML recommender (XGBoost)"):
-            model = _load_model()
+            n_players = st.session_state.game.num_players()
+            model = _load_model_for(n_players)
             if model is None:
-                st.info("Train the model with:  `python -m ml.train_xgb`  then rerun the app.")
+                st.info(
+                    f"No model found for {n_players} players. "
+                    "Train it with:  "
+                    f"`python -m ml.train_xgb --players {n_players} --games 20000 --rollouts 64 --seed 42 --out models/xgb_{n_players}p.json` "
+                    "then rerun the app."
+                )
             else:
                 if st.button("Recommend with ML", use_container_width=True, key=f"ml_rec_{pid}"):
                     card, color, scored = pick_with_xgb(model, st.session_state.game, pid)
@@ -517,6 +525,7 @@ def action_panel(game: GameState):
                             ok, msg = play_card_by_index(st.session_state.game, pid, idx or 0, color)
                             log(f"{p.name} (ML) -> {msg}")
                             st.rerun()
+
 
         # ---- Manual add card (only in manual mode) ------------------------------
         if st.session_state.game.manual_mode:
