@@ -43,6 +43,75 @@ def _load_model_for(n_players: int):
 
 st.set_page_config(page_title="UknowUno", page_icon="🃏", layout="wide")
 
+
+
+
+
+"""
+Actual card image UI helpers
+"""
+
+import os
+
+# ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets", "cards")
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+
+COLOR_TO_PREFIX = {
+    Color.RED: "red",
+    Color.BLUE: "blue",
+    Color.GREEN: "green",
+    Color.YELLOW: "yellow",
+}
+
+NUM_RANKS = {Rank.R0, Rank.R1, Rank.R2, Rank.R3, Rank.R4, Rank.R5, Rank.R6, Rank.R7, Rank.R8, Rank.R9}
+
+def card_png_path(c: Card) -> str:
+    # wilds
+    if c.rank == Rank.WILD:
+        return os.path.join(ASSET_DIR, "wild.png")
+    if c.rank == Rank.WILD_DRAW4:
+        return os.path.join(ASSET_DIR, "wild_draw4.png")
+
+    prefix = COLOR_TO_PREFIX[c.color]
+
+    # numbers (ONLY these, not REVERSE)
+    if c.rank in NUM_RANKS:
+        n = int(c.rank.name[1:])  # "R7" -> 7
+        return os.path.join(ASSET_DIR, f"{prefix}_{n}.png")
+
+    # actions
+    if c.rank == Rank.SKIP:
+        return os.path.join(ASSET_DIR, f"{prefix}_skip.png")
+    if c.rank == Rank.REVERSE:
+        return os.path.join(ASSET_DIR, f"{prefix}_reverse.png")
+    if c.rank == Rank.DRAW2:
+        return os.path.join(ASSET_DIR, f"{prefix}_draw2.png")
+
+    # fallback
+    return os.path.join(ASSET_DIR, "wild.png")
+
+
+def cards_for_section(section: str) -> List[Card]:
+    section = section.lower()
+    if section == "wild":
+        return [Card(None, Rank.WILD), Card(None, Rank.WILD_DRAW4)]
+
+    color_map = {
+        "red": Color.RED,
+        "blue": Color.BLUE,
+        "green": Color.GREEN,
+        "yellow": Color.YELLOW,
+    }
+    col = color_map[section]
+    nums = [Rank[f"R{i}"] for i in range(10)]
+    acts = [Rank.SKIP, Rank.REVERSE, Rank.DRAW2]
+    return [Card(col, r) for r in (nums + acts)]
+
+
+
+
+
 # ---------------- UI helpers ----------------
 
 COLOR_EMOJI = {
@@ -203,9 +272,67 @@ def lobby_screen():
 
 
     # --- your hand input ---
-    st.write("### Your 7 cards (comma separated)")
-    st.caption("Examples: `R-7, B-REVERSE, Y-0, G-2, R-5, WILD, WILD_DRAW4`")
-    my_cards_text = st.text_input("Enter exactly 7 cards", value="", key="lobby_my_hand")
+    # st.write("### Your 7 cards (comma separated)")
+    # st.caption("Examples: `R-7, B-REVERSE, Y-0, G-2, R-5, WILD, WILD_DRAW4`")
+    # my_cards_text = st.text_input("Enter exactly 7 cards", value="", key="lobby_my_hand")
+    st.write("### Build your 7-card hand")
+    st.caption("Click cards to add them. Use Clear/Undo if you misclick.")
+
+    # session storage for lobby picks (UI only)
+    if "lobby_hand" not in st.session_state:
+        st.session_state.lobby_hand = []  # list[str] of Card.short()
+    if "lobby_section" not in st.session_state:
+        st.session_state.lobby_section = "Red"
+
+    sec_cols = st.columns(5)
+    sections = ["Red", "Blue", "Green", "Yellow", "Wild"]
+    for i, s in enumerate(sections):
+        with sec_cols[i]:
+            if st.button(s, key=f"lobby_sec_{s}", use_container_width=True,
+                        type="primary" if st.session_state.lobby_section == s else "secondary"):
+                st.session_state.lobby_section = s
+                st.rerun()
+
+    # show current hand as images + count
+    st.write(f"**Current hand:** {len(st.session_state.lobby_hand)}/7")
+    hand_cols = st.columns(7)
+    for i in range(7):
+        with hand_cols[i]:
+            if i < len(st.session_state.lobby_hand):
+                c = Card.from_text(st.session_state.lobby_hand[i])
+                st.image(card_png_path(c), use_container_width=True)
+            else:
+                st.caption("—")
+
+    ctrlA, ctrlB, ctrlC = st.columns([1,1,2])
+    with ctrlA:
+        if st.button("Undo", use_container_width=True, disabled=(len(st.session_state.lobby_hand) == 0)):
+            st.session_state.lobby_hand.pop()
+            st.rerun()
+    with ctrlB:
+        if st.button("Clear", use_container_width=True, disabled=(len(st.session_state.lobby_hand) == 0)):
+            st.session_state.lobby_hand = []
+            st.rerun()
+
+    st.write("---")
+    st.write(f"**Pick from {st.session_state.lobby_section}:**")
+
+    # grid of selectable cards (image + button)
+    candidates = cards_for_section(st.session_state.lobby_section)
+    grid = st.columns(7)
+    for i, card in enumerate(candidates):
+        with grid[i % 7]:
+            st.image(card_png_path(card), use_container_width=True)
+            disabled = (len(st.session_state.lobby_hand) >= 7)
+            if st.button("Add", key=f"lobby_add_{st.session_state.lobby_section}_{card.short()}",
+                        use_container_width=True, disabled=disabled):
+                st.session_state.lobby_hand.append(card.short())
+                st.rerun()
+
+    # This is the string your existing parse_my_hand can use (no format change)
+    my_cards_text = ", ".join(st.session_state.lobby_hand)
+
+    
 
     # --- optional starting top card inputs ---
     st.write("### (Optional) Starting top card")
@@ -234,6 +361,8 @@ def lobby_screen():
         )
 
     
+
+
     if parsed_start_top is not None:
         st.caption(f"Parsed starting top: {card_icon(parsed_start_top)}")
     elif txt and parse_err:
