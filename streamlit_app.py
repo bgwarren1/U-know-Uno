@@ -215,6 +215,19 @@ def init_session():
         st.session_state.wild_color_pick = Color.RED
     if "log" not in st.session_state:
         st.session_state.log: List[str] = []
+    if "winner_pid" not in st.session_state:
+        st.session_state.winner_pid = None
+
+
+# Detect a winner of the game; 0 card count
+def detect_winner_pid(game: GameState) -> Optional[int]:
+    # winner = first player with 0 total cards
+    for pid, p in enumerate(game.players):
+        if p.total_count() == 0:
+            return pid
+    return None
+
+
 
 def log(msg: str):
     st.session_state.log.append(msg)
@@ -843,6 +856,13 @@ def table_screen():
     if game is None:
         st.session_state.phase = "lobby"
         st.rerun()
+    
+    winner = detect_winner_pid(game)
+    if winner is not None:
+        st.session_state.winner_pid = winner
+        st.session_state.phase = "game_over"
+        st.rerun()
+
 
     table_header(game)  # type: ignore[arg-type]
     st.write("---")
@@ -880,10 +900,60 @@ def table_screen():
 
 # ---------------- Router ----------------
 
+
+# Game over screen function
+def game_over_screen():
+    st.title("UknowUno 🃏")
+    st.header("🎉 Game Over")
+
+    game: Optional[GameState] = st.session_state.game
+    winner_pid = st.session_state.get("winner_pid", None)
+
+    if game is None or winner_pid is None:
+        st.info("No game result found. Returning to lobby.")
+        st.session_state.phase = "lobby"
+        st.rerun()
+        return
+
+    winner_name = game.players[winner_pid].name
+    st.markdown(f"## **{winner_name} wins!** 🏆")
+
+    st.write("---")
+    c1, c2 = st.columns([1, 1])
+
+    with c1:
+        if st.button("⬅️ Back to Lobby", type="primary", use_container_width=True):
+            st.session_state.phase = "lobby"
+            st.session_state.game = None
+            st.session_state.log = []
+            st.session_state.winner_pid = None
+            # optional: reset lobby pickers if you want:
+            # st.session_state.lobby_hand = []
+            # st.session_state.lobby_top = ""
+            st.rerun()
+
+    with c2:
+        if st.button("🔁 Keep viewing final table", use_container_width=True):
+            st.session_state.phase = "table"
+            st.rerun()
+
+    # optional: show last moves
+    with st.expander("Show game history"):
+        if not st.session_state.log:
+            st.caption("_Empty_")
+        else:
+            for line in reversed(st.session_state.log):
+                st.write("• " + line)
+
+
+
+
 if st.session_state.phase == "lobby":
     lobby_screen()
-else:
+elif st.session_state.phase == "table":
     table_screen()
+else:  # "game_over"
+    game_over_screen()
 
 
 
