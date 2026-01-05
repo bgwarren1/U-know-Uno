@@ -321,7 +321,7 @@ init_session()
 # ---------------- Lobby ----------------
 
 def lobby_screen():
-    st.title("UknowUno 🃏")
+    st.title("UknowUno")
     st.subheader("Lobby")
     st.caption("Tell the app your exact 7-card hand, then pick a starting top card. Opponents stay hidden.")
     manual_mode = st.toggle(
@@ -718,8 +718,36 @@ def action_panel(game: GameState):
                         st.toast(f"Suggested: {card_icon(rec)}")
                         st.rerun()
 
+        
+
+        # ---- ⚡ Instant ML recommender (XGBoost) --------------------------------
+        with st.expander("⚡ Instant ML recommender (XGBoost)"):
+            n_players = st.session_state.game.num_players()
+            model = _load_model_for(n_players)
+            if model is None:
+                st.info(
+                    f"No model found for {n_players} players. "
+                    "Train it with:  "
+                    f"`python -m ml.train_xgb --players {n_players} --games 20000 --rollouts 64 --seed 42 --out models/xgb_{n_players}p.json` "
+                    "then rerun the app."
+                )
+            else:
+                if st.button("Recommend with ML", use_container_width=True, key=f"ml_rec_{pid}"):
+                    card, color, scored = pick_with_xgb(model, st.session_state.game, pid)
+                    if card is None:
+                        st.warning("No legal actions.")
+                    else:
+                        label = card.short() + (f" → {color.name.title()}" if color else "")
+                        st.success(f"ML suggests: {label}")
+                        idx = find_hand_index_of_card(st.session_state.game.players[pid].hand, card)
+                        if st.button("Play ML suggestion", key=f"ml_play_{pid}"):
+                            ok, msg = play_card_by_index(st.session_state.game, pid, idx or 0, color)
+                            log(f"{p.name} (ML) -> {msg}")
+                            st.rerun()
+
+
         # ---- 🤖 Rollout Oracle (ensemble) --------------------------------------
-        with st.expander("🤖 AI: Rollout Oracle (ensemble)"):
+        with st.expander("Want to look deeper? Estimate win rate for each move"):
             c1, c2, c3 = st.columns([2, 1, 1])
             with c1:
                 rollouts = st.slider("Rollouts per action", 8, 256, 64, step=8, key=f"oracle_roll_{pid}")
@@ -767,31 +795,6 @@ def action_panel(game: GameState):
                     se = (p_hat * (1 - p_hat) / n) ** 0.5
                     lo, hi = max(0.0, p_hat - 1.96 * se), min(1.0, p_hat + 1.96 * se)
                     st.write(f"{i}. {label} — win≈ **{p_hat:.3f}**  (±{1.96*se:.3f})  [{lo:.3f}, {hi:.3f}]  (wins {e.wins}/{e.trials})")
-
-        # ---- ⚡ Instant ML recommender (XGBoost) --------------------------------
-        with st.expander("⚡ Instant ML recommender (XGBoost)"):
-            n_players = st.session_state.game.num_players()
-            model = _load_model_for(n_players)
-            if model is None:
-                st.info(
-                    f"No model found for {n_players} players. "
-                    "Train it with:  "
-                    f"`python -m ml.train_xgb --players {n_players} --games 20000 --rollouts 64 --seed 42 --out models/xgb_{n_players}p.json` "
-                    "then rerun the app."
-                )
-            else:
-                if st.button("Recommend with ML", use_container_width=True, key=f"ml_rec_{pid}"):
-                    card, color, scored = pick_with_xgb(model, st.session_state.game, pid)
-                    if card is None:
-                        st.warning("No legal actions.")
-                    else:
-                        label = card.short() + (f" → {color.name.title()}" if color else "")
-                        st.success(f"ML suggests: {label}")
-                        idx = find_hand_index_of_card(st.session_state.game.players[pid].hand, card)
-                        if st.button("Play ML suggestion", key=f"ml_play_{pid}"):
-                            ok, msg = play_card_by_index(st.session_state.game, pid, idx or 0, color)
-                            log(f"{p.name} (ML) -> {msg}")
-                            st.rerun()
 
 
         # ---- Manual add card (only in manual mode) ------------------------------
