@@ -217,6 +217,11 @@ def init_session():
         st.session_state.log: List[str] = []
     if "winner_pid" not in st.session_state:
         st.session_state.winner_pid = None
+    if "ml_pending_card_short" not in st.session_state:
+        st.session_state.ml_pending_card_short = None  # str like "WILD" or "R-5"
+    if "ml_pending_color" not in st.session_state:
+        st.session_state.ml_pending_color = None  # Color or None
+
 
 
 # Detect a winner of the game; 0 card count
@@ -681,11 +686,30 @@ def action_panel(game: GameState):
             if st.button("Play", type="primary", use_container_width=True, disabled=(not my_turn or sel_idx is None)):
                 chosen = None
                 if sel_idx is not None and sel_idx < len(p.hand) and p.hand[sel_idx].is_wild():
-                    chosen = st.session_state.get("wild_color_pick", None)
-                ok, msg = play_card_by_index(st.session_state.game, pid, sel_idx if sel_idx is not None else -1, chosen)
+                    # If ML recommended THIS wild and picked a color, use it automatically
+                    if (
+                        st.session_state.get("ml_pending_card_short") == p.hand[sel_idx].short()
+                        and st.session_state.get("ml_pending_color") is not None
+                    ):
+                        chosen = st.session_state.get("ml_pending_color")
+                    else:
+                        chosen = st.session_state.get("wild_color_pick", None)
+
+                ok, msg = play_card_by_index(
+                    st.session_state.game,
+                    pid,
+                    sel_idx if sel_idx is not None else -1,
+                    chosen
+                )
                 log(f"{p.name} -> Play: {msg}")
                 reset_selection()
+
+                # Clear ML pending info so it doesn't "stick" to future plays
+                st.session_state.ml_pending_card_short = None
+                st.session_state.ml_pending_color = None
+
                 st.rerun()
+
 
         with colB:
             draw_disabled = (not my_turn) or st.session_state.game.manual_mode
@@ -702,21 +726,33 @@ def action_panel(game: GameState):
                 st.rerun()
 
         with colD:
-            if st.button("Recommend", use_container_width=True):
-                hand = p.hand
+            if st.button("Recommend (ML)", use_container_width=True):
                 top = game.top_card
                 if top is None:
                     st.info("No top card.")
                 else:
-                    next_size = game.players[game.next_index(1)].total_count()
-                    rec = recommend_move(hand, top, game.active_color, next_player_hand_size=next_size)
-                    if rec is None:
-                        st.info("No recommendation.")
+                    n_players = st.session_state.game.num_players()
+                    model = _load_model_for(n_players)
+
+                    if model is None:
+                        st.warning(f"No ML model found for {n_players} players.")
                     else:
-                        idx = next((i for i, h in enumerate(hand) if h == rec), None)
-                        st.session_state.selected_card_idx = idx
-                        st.toast(f"Suggested: {card_icon(rec)}")
-                        st.rerun()
+                        card, color, scored = pick_with_xgb(model, st.session_state.game, pid)
+                        if card is None:
+                            st.warning("No legal actions.")
+                        else:
+                            idx = find_hand_index_of_card(p.hand, card)
+                            if idx is None:
+                                st.warning("ML recommended a card not found in your hand (state changed). Try again.")
+                            else:
+                                st.session_state.selected_card_idx = idx
+                                st.session_state.ml_pending_color = color  # may be None
+                                st.session_state.ml_pending_card_short = card.short()
+
+                                label = card.short() + (f" → {color.name.title()}" if color else "")
+                                st.toast(f"ML suggests: {label}")
+                                st.rerun()
+
 
         
 
