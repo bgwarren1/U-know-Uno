@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import numpy as np
 from pathlib import Path
-
+import os
 from uknowuno.cards import Color, Card
 from uknowuno.game_state import GameState
 from ml.featurize import build_examples_for_legal_actions
 
 # Models live in ../models/xgb_{2,3,4}p.json with a sidecar .meta.json
-MODEL_DIR = (Path(__file__).resolve().parent.parent / "models").resolve()
+MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
+
 
 def _paths(n_players: int) -> tuple[Path, Path]:
     mpath = MODEL_DIR / f"xgb_{n_players}p.json"
