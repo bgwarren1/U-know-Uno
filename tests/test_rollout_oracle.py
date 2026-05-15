@@ -9,6 +9,7 @@ from ml.rollout_oracle import (
     my_best_color_from_hand,
     hidden_pool_has,
     opponent_pick_card_for_menu,
+    OpponentPolicyConfig,
     is_terminal,
     simulate_to_end,
     rollout_value_for_action,
@@ -86,7 +87,7 @@ def test_opponent_pick_card_for_menu_basic_choice():
         if pid != state.my_index:
             state.players[pid].hidden_count = 1
             break
-    proto, chosen_color = opponent_pick_card_for_menu(state, pid=1, rng=random.Random(0), cfg=None)  # cfg default in function
+    proto, chosen_color = opponent_pick_card_for_menu(state, pid=1, rng=random.Random(0), cfg=OpponentPolicyConfig())
     assert proto is not None
     assert proto.color == Color.RED or proto.is_wild()
     # Wilds allowed, chosen_color can be None or a Color; we only assert type correctness
@@ -95,7 +96,8 @@ def test_opponent_pick_card_for_menu_basic_choice():
 
 def test_simulate_to_end_smoke():
     state = make_start_state()
-    winner = simulate_to_end(state, my_id=0, rng=random.Random(123), max_turns=600)
+    finished, winner = simulate_to_end(state, my_id=0, rng=random.Random(123), max_turns=600)
+    assert finished
     assert winner in {0, 1, 2, 3}
 
 def test_rollout_value_for_action_bounds_and_trials():
@@ -110,7 +112,7 @@ def test_rollout_value_for_action_bounds_and_trials():
 def test_evaluate_current_position_returns_sorted_and_state_unchanged():
     state = make_start_state()
     before = (list(state.discard), state.current_player)
-    estimates = evaluate_current_position(state, my_id=0, n_rollouts_per_action=8, rng_seed=7)
+    estimates = evaluate_current_position(state, my_id_world=0, n_rollouts_per_action=8, rng_seed=7)
     # Should have at least one estimate (one per legal move; wilds collapsed to best color)
     assert len(estimates) >= 1
     # Sorted descending by win_rate

@@ -17,7 +17,7 @@ def test_evaluate_current_position_returns_sorted_and_state_unchanged():
         manual_mode=False,
     )
     before = (list(state.discard), state.current_player)
-    estimates = evaluate_current_position(state, my_id=0, n_rollouts_per_action=8, rng_seed=7)
+    estimates = evaluate_current_position(state, my_id_world=0, n_rollouts_per_action=8, rng_seed=7)
     # Should have at least one estimate (one per legal move; wilds collapsed to best color)
     assert len(estimates) >= 1
     # Sorted descending by win_rate

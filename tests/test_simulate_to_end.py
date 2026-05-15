@@ -15,6 +15,7 @@ def test_simulate_to_end_smoke():
         seed=42,
         hand_size=7,
         manual_mode=False,)
-     winner = simulate_to_end(state, my_id=0, rng=random.Random(123), max_turns=600)
-     assert winner in {0, 1, 2, 3}  
+     finished, winner = simulate_to_end(state, my_id=0, rng=random.Random(123), max_turns=600)
+     assert finished
+     assert winner in {0, 1, 2, 3}
     
