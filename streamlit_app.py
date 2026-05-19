@@ -23,10 +23,24 @@ from uknowuno.engine import (
 )
 
 from ml.rollout_oracle import evaluate_current_position, find_hand_index_of_card, determinize_from_counts, evaluate_ensemble
-
 from uknowuno.rules import full_deck
 
 from uknowuno.strategy import recommend_move
+from pydantic import BaseModel, Field, model_validator
+
+
+class GameSetupConfig(BaseModel):
+    num_players: int = Field(ge=2, le=10)
+    my_index: int = Field(ge=0)
+    hand_size: int = Field(default=7, ge=1)
+
+    @model_validator(mode='after')
+    def index_within_players(self) -> 'GameSetupConfig':
+        if self.my_index >= self.num_players:
+            raise ValueError(
+                f"Seat index {self.my_index} must be less than num_players {self.num_players}"
+            )
+        return self
 
 
 
@@ -555,7 +569,14 @@ def lobby_screen():
             except Exception:
                 st.warning("Seed must be an integer; ignoring.")
 
-        # 4) Create game
+        # 4) Validate setup inputs
+        try:
+            GameSetupConfig(num_players=int(n), my_index=int(my_index))
+        except Exception as e:
+            st.error(f"Invalid game setup: {e}")
+            return
+
+        # 5) Create game
         try:
             st.session_state.game = start_game_with_my_hand(
                 num_players=int(n),

@@ -4,3 +4,4 @@ scipy>=1.11
 pandas>=2.2
 xgboost==3.1.2
 pillow>=10.2
+pydantic>=2.0
