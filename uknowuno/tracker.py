@@ -2,11 +2,6 @@ from collections import Counter
 from typing import List, Dict
 from .cards import Card
 
-"""
-NEED TO REVIEW THIS, CARDS ARE NOT BEING REMOVED FROM CARD SELECTION DROPDOWN
-"""
-
-
 class PlayTracker:
     """
     Tracks what has been seen to help drive simple heuristics now

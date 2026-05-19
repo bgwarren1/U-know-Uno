@@ -160,7 +160,5 @@ def main():
     print("Saved:", outpath)
     print("Feature dim:", X.shape[1])
 
-    print("Feature dim:", X.shape[1])
-
 if __name__ == "__main__":
     main()
