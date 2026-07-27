@@ -13,7 +13,7 @@ from uknowuno.cards import Card, Color, Rank
 from uknowuno.game_state import GameState
 
 from ml.featurize import build_examples_for_legal_actions
-from ml.rollout_oracle import evaluate_current_position  # uses your simulate_to_end etc.
+from ml.rollout_oracle import evaluate_ensemble  # determinizes per world -> individual opponent hands
 
 # -------------------------
 # Args
@@ -75,12 +75,18 @@ def collect_dataset(n_games: int, rollouts_per_action: int, seed: int):
         # Build (state,action) feature vectors for each legal action
         X_actions, acts = build_examples_for_legal_actions(state, me)
 
-        # Label with rollout win-rates for the same action order
-        ests = evaluate_current_position(
-            world=state,
-            my_id_world=me,
+        # Label with rollout win-rates for the same action order.
+        # FIX (opponent-hands): use evaluate_ensemble with force_determinize so every training
+        # rollout runs in a concrete world where opponents hold their OWN dealt hands. The old
+        # evaluate_current_position call ran on the raw manual state (empty deck/pool), so
+        # opponents were frozen and never played -- producing badly skewed labels.
+        ests = evaluate_ensemble(
+            state,
+            my_id=me,
+            n_worlds=args.worlds,
             n_rollouts_per_action=rollouts_per_action,
             rng_seed=local_rng.randint(0, 2**31-1),
+            force_determinize=True,
         )
 
         # Map (card, chosen_color) → win_rate so order lines up
