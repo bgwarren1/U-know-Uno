@@ -48,14 +48,21 @@ def map_pid_by_name(src: "GameState", dst: "GameState", pid: int) -> int:
     return min(pid, dst.num_players() - 1)
 
 def estimate_baseline(world: "GameState", my_id_world: int, trials: int = 256) -> float:
+    """Win rate if we take no forced action -- the 'do nothing special' reference.
+
+    FIX (opponent-hands): deal a concrete world (individual opponent hands) per trial unless the
+    caller already passed a fully-dealt world. Previously this ran on the raw manual state where
+    the deck/pool were empty and opponents could never move, producing a meaningless baseline.
+    """
     rng = random.Random(1337)
     finished = wins = 0
     for _ in range(trials):
-        s = copy.deepcopy(world)
-        done, w = simulate_to_end(s, my_id_world, rng, max_turns=300)
+        s = world if world.all_hands_known else determinize_from_counts(world, rng)
+        my_id = map_pid_by_name(world, s, my_id_world)
+        done, w = simulate_to_end(copy.deepcopy(s), my_id, rng, max_turns=300)
         if done:
             finished += 1
-            wins += (w == my_id_world)
+            wins += (w == my_id)
     return (wins / finished) if finished else 0.0
 
 
@@ -99,29 +106,41 @@ def _remove_one(pool, card):
     return False
 
 def determinize_from_counts(state: GameState, rng: random.Random) -> GameState:
-    """Sample a full world (hidden hands + deck) consistent with your visible info."""
+    """Sample a full world (hidden hands + deck) consistent with your visible info.
+
+    FIX (opponent-hands): previously every opponent's sampled cards were poured into ONE shared
+    `hidden_pool`, which let each opponent play from the whole combined pile (14-21 cards) instead
+    of their own 7. Now we DEAL each opponent an individual `Player.hand` of exactly their
+    `hidden_count` cards, drawn without replacement, and mark the world `all_hands_known=True`.
+    The leftover cards become the draw deck. Each simulated world is thus one concrete, legal
+    Uno game in which every opponent holds and plays only their own cards.
+    """
     s = copy.deepcopy(state)
     pool = full_deck()
 
-    # remove your hand & entire discard (including top)
+    # remove your hand & entire discard (including top) -- these cards are accounted for
     for c in s.players[s.my_index].hand:
         assert _remove_one(pool, c)
     for c in s.discard:
         assert _remove_one(pool, c)
 
-    # deal identities to opponents based on their hidden_count
-    s.hidden_pool = []
+    # Deal each opponent their OWN private hand of `hidden_count` cards.
+    s.hidden_pool = []  # no longer used once hands are dealt out
     for pid in range(s.num_players()):
         if pid == s.my_index:
             continue
         k = s.players[pid].hidden_count
         draw = rng.sample(pool, k)
-        for c in draw: _remove_one(pool, c)
-        s.hidden_pool.extend(draw)
+        for c in draw:
+            _remove_one(pool, c)
+        s.players[pid].hand = list(draw)   # individual, consistent hand for the whole playout
+        s.players[pid].hidden_count = 0     # cards are now explicit, not just a count
 
+    # Whatever is left is the shared draw deck.
     rng.shuffle(pool)
     s.deck = pool
     s.manual_mode = False
+    s.all_hands_known = True                # every seat now has a real hand
     return s
 
 
@@ -194,6 +213,45 @@ def opponent_pick_card_for_menu(state: GameState, pid: int, rng: random.Random,
         chosen_color = state.active_color or rng.choice([Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE])
 
     return proto, chosen_color
+
+
+def opponent_pick_from_hand(state: GameState, pid: int, rng: random.Random,
+                            cfg: OpponentPolicyConfig) -> Tuple[Optional[Card], Optional[Color]]:
+    """FIX (opponent-hands): choose a card from the opponent's OWN hand.
+
+    Same preference logic as `opponent_pick_card_for_menu` (prefer action cards, prefer keeping
+    the active color, random tie-break), but it only considers cards the player actually holds --
+    `legal_moves_for_player` reads `state.players[pid].hand`. Returns (card, chosen_color_for_wild)
+    or (None, None) if the player must draw. Used in fully-dealt rollout worlds.
+    """
+    top = state.top_card
+    if top is None:
+        return None, None
+
+    legal = legal_moves_for_player(state, pid)  # reads the player's individual hand
+    if not legal:
+        return None, None
+
+    def score(card: Card) -> Tuple[int, int, int]:
+        is_action = int(card.rank in (Rank.SKIP, Rank.REVERSE, Rank.DRAW2))
+        is_same_color = int((not card.is_wild()) and (card.color == state.active_color))
+        is_number = int(card.rank.name.startswith("R"))
+        return (
+            is_action if cfg.prefer_actions_first else is_number,
+            is_same_color if cfg.prefer_keep_color else 0,
+            rng.randint(0, 10_000),
+        )
+
+    card = max(legal, key=score)
+
+    chosen_color: Optional[Color] = None
+    if card.is_wild():
+        # Pick the color this opponent holds most of (falls back to active color / random).
+        chosen_color = (my_best_color_from_hand(state.players[pid].hand)
+                        or state.active_color
+                        or rng.choice([Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE]))
+
+    return card, chosen_color
 
 
 
@@ -281,7 +339,28 @@ def simulate_to_end(
                     pass_turn(state, pid)
 
         # --- OPPONENT TURN: reasonable baseline policy
+        elif state.all_hands_known:
+            # FIX (opponent-hands): fully-dealt world -> opponent plays from their OWN hand,
+            # exactly like a real player, via play_card_by_index (not the shared-pool menu).
+            card, color = opponent_pick_from_hand(state, pid, rng, OpponentPolicyConfig())
+            if card is not None:
+                idx = find_hand_index_of_card(state.players[pid].hand, card)
+                play_card_by_index(state, pid, idx if idx is not None else 0, color)
+            else:
+                # No legal card: draw 1, auto-play if it helps, else pass.
+                draw_for_player(state, pid, 1)
+                legal2 = legal_moves_for_player(state, pid)
+                if legal2:
+                    c2 = legal2[0]
+                    idx = find_hand_index_of_card(state.players[pid].hand, c2) or 0
+                    color2 = my_best_color_from_hand(state.players[pid].hand) if c2.is_wild() else None
+                    play_card_by_index(state, pid, idx, color2)
+                else:
+                    pass_turn(state, pid)
+
         else:
+            # LEGACY path (world not dealt out): keep the old shared-pool menu behavior so
+            # existing callers/tests that pass a non-determinized state still run.
             proto, color = opponent_pick_card_for_menu(state, pid, rng, OpponentPolicyConfig())
             if proto is not None:
                 opponent_play_from_menu(state, pid, proto, color)
