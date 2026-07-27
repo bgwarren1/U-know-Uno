@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from uknowuno.engine import start_game_with_my_hand, legal_moves_for_player
 from uknowuno.cards import Card, Color, Rank
 from uknowuno.game_state import GameState
+from uknowuno.rules import full_deck
 
 from ml.featurize import build_examples_for_legal_actions
 from ml.rollout_oracle import evaluate_ensemble  # determinizes per world -> individual opponent hands
@@ -27,32 +28,61 @@ ap.add_argument("--seed", type=int, default=42)
 ap.add_argument("--out", type=str, default=None)
 args = ap.parse_args()
 
-rng = random.Random(args.seed)
+# -------------------------
+# Mid-game position sampler
+# -------------------------
+def sample_midgame_position(rng: random.Random) -> GameState:
+    """Sample a diverse mid-game snapshot for training (NOT a game start).
 
-# -------------------------
-# Start-state sampler
-# -------------------------
-def new_start_state() -> GameState:
-    """Create a manual-mode starting state with a safe top and a playable hand."""
-    top = Card(Color.RED, Rank.R4)
-    # Hand with at least one legal play vs RED R4
-    my_hand = [
-        Card(Color.RED, Rank.R1), Card(Color.RED, Rank.R6),
-        Card(Color.GREEN, Rank.R4), Card(Color.YELLOW, Rank.R8),
-        Card(Color.BLUE, Rank.R2), Card(None, Rank.WILD),
-        Card(Color.BLUE, Rank.REVERSE),
-    ]
-    rng.shuffle(my_hand)
-    g = start_game_with_my_hand(
-        num_players=args.players,
-        my_hand=my_hand,
-        my_index=0,
-        seed=rng.randint(0, 2**31-1),
-        hand_size=7,
-        initial_top=top,
-        initial_active_color=top.color,
-        manual_mode=True,           # matches real-play usage
-    )
+    In real use the app is opened at ANY point in a game, so the model is queried at every hand
+    size, not just turn 1. The old sampler returned the SAME 7-card position every call, so
+    training on 20000 games was really one position 20000 times. Instead we sample a *snapshot* of
+    a game already in progress, randomizing:
+      - the current top card (its color/rank -> the active color),
+      - my current hand: contents AND size (1..7 cards remaining),
+      - each opponent's remaining card count (1..7).
+
+    Note: this is a snapshot, not a dealt game -- a real Uno game always starts at 7 cards each;
+    here the smaller counts represent cards already played. My hand and the top are dealt from ONE
+    shuffled deck so the position is always legal (no card exceeds its real deck count, which would
+    otherwise crash determinization). We also require at least one legal move so the example isn't
+    skipped by the collector. Opponent counts are drawn independently of my hand size, so the joint
+    distribution is an approximation of real play, not an exact match (accepted tradeoff).
+    """
+    for _ in range(100):
+        deck = full_deck()
+        rng.shuffle(deck)
+
+        # Current top: re-flip on a wild so the active color is well-defined (standard Uno rule).
+        top = deck.pop()
+        while top.is_wild():
+            deck.insert(0, top)
+            top = deck.pop()
+
+        # My hand: random remaining size, dealt from the same deck so nothing collides with the top.
+        hand_size = rng.randint(1, 7)
+        my_hand = [deck.pop() for _ in range(hand_size)]
+
+        g = start_game_with_my_hand(
+            num_players=args.players,
+            my_hand=my_hand,
+            my_index=0,
+            hand_size=hand_size,
+            initial_top=top,
+            initial_active_color=top.color,
+            manual_mode=True,           # matches real-play usage
+        )
+
+        # Vary opponents' remaining counts to represent mid-game (old code left them all at 7).
+        for pid in range(g.num_players()):
+            if pid != g.my_index:
+                g.players[pid].hidden_count = rng.randint(1, 7)
+
+        # Keep only positions where I have a legal move (otherwise there's nothing to label).
+        if legal_moves_for_player(g, g.current_player):
+            return g
+
+    # Fallback (practically never hit): return the last sampled snapshot.
     return g
 
 # -------------------------
@@ -65,7 +95,7 @@ def collect_dataset(n_games: int, rollouts_per_action: int, seed: int):
     local_rng = random.Random(seed)
 
     for gi in range(n_games):
-        state = new_start_state()
+        state = sample_midgame_position(local_rng)
         me = state.current_player
 
         # If there are no legal actions, skip (should be rare with our hand/top)
