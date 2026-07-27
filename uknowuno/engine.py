@@ -270,7 +270,9 @@ def draw_for_player(state: GameState, player_id: int, n: int = 1) -> Tuple[bool,
     if player_id != state.current_player:
         return False, f"Not {state.players[player_id].name}'s turn.", []
     drawn = _draw_from_deck(state, n)
-    if player_id == state.my_index:
+    # In a fully-dealt rollout world, opponents have real hands too, so drawn cards go into
+    # the drawing player's own hand (not the shared hidden_pool).
+    if player_id == state.my_index or state.all_hands_known:
         state.players[player_id].hand.extend(drawn)
     else:
         state.hidden_pool.extend(drawn)
@@ -315,7 +317,8 @@ def _apply_action_and_advance(state: GameState, card: Card) -> Tuple[bool, str]:
             return True, f"{state.players[np_index].name} draws 2 (manual)."
         else:
             drawn = _draw_from_deck(state, 2)
-            if np_index == state.my_index:
+            # Fully-dealt rollout world: victim holds a real hand, so add the 2 cards there.
+            if np_index == state.my_index or state.all_hands_known:
                 state.players[np_index].hand.extend(drawn)
             else:
                 state.hidden_pool.extend(drawn)
@@ -334,7 +337,8 @@ def _apply_action_and_advance(state: GameState, card: Card) -> Tuple[bool, str]:
             return True, f"{state.players[np_index].name} draws 4 (manual)."
         else:
             drawn = _draw_from_deck(state, 4)
-            if np_index == state.my_index:
+            # Fully-dealt rollout world: victim holds a real hand, so add the 4 cards there.
+            if np_index == state.my_index or state.all_hands_known:
                 state.players[np_index].hand.extend(drawn)
             else:
                 state.hidden_pool.extend(drawn)
