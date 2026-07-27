@@ -20,6 +20,12 @@ class GameState:
     # manual mode: in this mode (realistic online game mode), operator must record every play and top card
     manual_mode: bool = False
 
+    # FIX (opponent-hands): rollout-only flag. True once a world has been "dealt out" so that
+    # every player -- including opponents -- holds their OWN individual hand (Player.hand) instead
+    # of sharing one combined hidden_pool. Simulations use this to make each opponent play from
+    # their own cards, and to route drawn cards into the correct player's hand.
+    all_hands_known: bool = False
+
     
 
     
